@@ -1091,6 +1091,61 @@ a,
   text-transform: uppercase;
 }
 
+.fishing-map-fullscreen-toggle {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  z-index: 1400;
+  min-height: 34px;
+  padding: 6px 12px;
+  font-size: 0.66rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.fishing-map-shell--fullscreen {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  width: 100vw;
+  height: 100vh;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: #000;
+}
+
+.fishing-map-shell--fullscreen .fishing-map-settings-toggle,
+.fishing-map-shell--fullscreen .fishing-map-fullscreen-toggle,
+.fishing-map-shell--fullscreen .fishing-map-settings,
+.fishing-map-shell--fullscreen .fishing-map-local-status,
+.fishing-map-shell--fullscreen .fishing-map-attribution {
+  display: none;
+}
+
+.fishing-map-shell--fullscreen .fishing-map-canvas,
+.fishing-map-shell--fullscreen .fishing-map-fallback {
+  height: 100vh !important;
+  min-height: 100vh !important;
+  width: 100vw !important;
+}
+
+.fishing-map-shell--fullscreen .leaflet-container {
+  width: 100vw !important;
+  height: 100vh !important;
+}
+
+.fishing-map-shell--fullscreen .fishing-map-intel-legend {
+  display: none;
+}
+
+.fishing-map-shell--fullscreen .camera-fullscreen__exit {
+  top: 14px;
+  right: 14px;
+}
+
 .fishing-map-settings {
   position: absolute;
   top: 48px;
@@ -3668,17 +3723,17 @@ body {
     linear-gradient(180deg, #161d28, #101720);
   box-shadow: none;
   backdrop-filter: none;
-  padding: 7px 12px;
-  min-height: 60px;
+  padding: 4px 12px;
+  min-height: 56px;
 }
 
 .home-header__logo {
-  height: 56px;
-  width: auto;
+  height: 52px;
+  width: 132px;
   flex-shrink: 0;
   border-radius: 4px;
-  /* invert white bg to near-black on the dark header; hue-rotate restores brand teal/gold */
-  filter: invert(1) hue-rotate(180deg);
+  object-fit: cover;
+  object-position: center;
 }
 
 .home-header__wordmark {
@@ -3826,11 +3881,33 @@ body {
   overflow: hidden;
 }
 
+.dashboard.garmin-viewport .drill-panel--fishing-map .fishing-map-shell.fishing-map-shell--fullscreen {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  width: 100vw;
+  height: 100vh;
+  min-height: 100vh;
+  border-radius: 0;
+  border: 0;
+  margin: 0;
+  padding: 0;
+  background: #000;
+}
+
 /* 8. Map canvas — responsive height with strong minimum so Leaflet always has a measured area */
 .dashboard.garmin-viewport .drill-panel--fishing-map .fishing-map-canvas {
   width: 100% !important;
   height: clamp(320px, 50vh, 660px) !important;
   min-height: 320px !important;
+}
+
+.dashboard.garmin-viewport .drill-panel--fishing-map .fishing-map-shell.fishing-map-shell--fullscreen .fishing-map-canvas,
+.dashboard.garmin-viewport .drill-panel--fishing-map .fishing-map-shell.fishing-map-shell--fullscreen .fishing-map-fallback,
+.dashboard.garmin-viewport .drill-panel--fishing-map .fishing-map-shell.fishing-map-shell--fullscreen .leaflet-container {
+  width: 100vw !important;
+  height: 100vh !important;
+  min-height: 100vh !important;
 }
 
 .dashboard.garmin-viewport .drill-panel--fishing-map .fishing-map-fallback {
@@ -4699,6 +4776,248 @@ body {
   font-size: 1.05rem;
 }
 
+.weather-panel {
+  display: grid;
+  gap: 10px;
+}
+
+.weather-strip {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.weather-strip__card {
+  display: grid;
+  gap: 4px;
+  padding: 10px;
+  border-radius: 10px;
+  border: 1px solid var(--garmin-line);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.03), rgba(0, 0, 0, 0.2));
+}
+
+.weather-strip__card span {
+  font-size: 0.6rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: rgba(214, 233, 251, 0.76);
+}
+
+.weather-strip__card strong {
+  font-size: 1.06rem;
+  color: rgba(242, 250, 255, 0.98);
+}
+
+.weather-layout {
+  display: grid;
+  grid-template-columns: 1.35fr 1fr;
+  gap: 10px;
+  min-height: 0;
+}
+
+.weather-radar-card,
+.weather-forecast {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border-radius: 10px;
+  border: 1px solid rgba(122, 180, 255, 0.36);
+  background:
+    radial-gradient(circle at top right, rgba(122, 180, 255, 0.11), transparent 40%),
+    linear-gradient(180deg, rgba(9, 21, 34, 0.92), rgba(6, 14, 24, 0.94));
+}
+
+.weather-radar-card__header,
+.weather-forecast__header {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.weather-radar-card__header h3,
+.weather-forecast__header h3 {
+  margin: 0;
+  font-size: 0.98rem;
+}
+
+.weather-radar-card__actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.weather-radar-map-shell {
+  position: relative;
+  min-height: 0;
+}
+
+.weather-radar-map {
+  width: 100%;
+  height: 290px;
+  border-radius: 10px;
+  overflow: hidden;
+  border: 1px solid rgba(122, 180, 255, 0.28);
+}
+
+.weather-radar-card__note {
+  margin: 0;
+  font-size: 0.68rem;
+  letter-spacing: 0.05em;
+  color: rgba(220, 236, 255, 0.78);
+}
+
+.weather-radar-map--fullscreen {
+  width: 100vw !important;
+  height: 100vh !important;
+  min-height: 100vh !important;
+  border-radius: 0;
+  border: 0;
+}
+
+.weather-radar-fullscreen .leaflet-container {
+  width: 100vw !important;
+  height: 100vh !important;
+  min-height: 100vh !important;
+}
+
+.trip-route-map-shell {
+  width: 100%;
+  height: 290px;
+  min-height: 240px;
+  margin-bottom: 16px;
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.trip-route-map {
+  width: 100%;
+  height: 100%;
+  border-radius: 12px;
+  border: 1px solid rgba(122, 180, 255, 0.24);
+  overflow: hidden;
+}
+
+.trip-route-map--fullscreen {
+  width: 100vw !important;
+  height: 100vh !important;
+  min-height: 100vh !important;
+  border-radius: 0;
+  border: 0;
+}
+
+.weather-radar-fullscreen .trip-route-map--fullscreen .leaflet-container {
+  width: 100vw !important;
+  height: 100vh !important;
+  min-height: 100vh !important;
+}
+
+.weather-radar-fullscreen__hud {
+  position: absolute;
+  left: 16px;
+  bottom: 16px;
+  z-index: 10000;
+  display: grid;
+  gap: 3px;
+  max-width: min(62vw, 520px);
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(122, 180, 255, 0.42);
+  background: rgba(4, 12, 20, 0.84);
+  color: rgba(236, 246, 255, 0.95);
+  backdrop-filter: blur(6px);
+}
+
+.weather-radar-fullscreen__hud strong {
+  font-size: 0.82rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.weather-radar-fullscreen__hud span {
+  font-size: 0.75rem;
+  color: rgba(221, 236, 255, 0.9);
+}
+
+.weather-forecast__grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.weather-forecast__card {
+  display: grid;
+  gap: 4px;
+  padding: 9px;
+  border-radius: 9px;
+  border: 1px solid rgba(122, 180, 255, 0.28);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.03), rgba(0, 0, 0, 0.2));
+}
+
+.weather-forecast__card span {
+  font-size: 0.61rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: rgba(221, 238, 255, 0.78);
+}
+
+.weather-forecast__card strong {
+  font-size: 1.08rem;
+  color: rgba(245, 251, 255, 0.99);
+}
+
+.weather-forecast__card div {
+  font-size: 0.72rem;
+  color: rgba(225, 241, 255, 0.9);
+}
+
+.weather-forecast__card p {
+  margin: 0;
+  font-size: 0.69rem;
+  color: rgba(221, 235, 248, 0.78);
+}
+
+.weather-forecast__foot {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.weather-forecast__stat {
+  display: grid;
+  gap: 2px;
+  padding: 8px;
+  border-radius: 8px;
+  border: 1px solid rgba(122, 180, 255, 0.22);
+  background: rgba(7, 16, 28, 0.7);
+}
+
+.weather-forecast__stat span {
+  font-size: 0.58rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: rgba(214, 231, 246, 0.74);
+}
+
+.weather-forecast__stat strong {
+  font-size: 0.88rem;
+}
+
+@media (max-width: 1300px) {
+  .weather-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .weather-radar-map {
+    height: 240px;
+  }
+
+  .trip-route-map-shell {
+    height: 240px;
+    min-height: 220px;
+  }
+}
+
 .home-panel__home-actions {
   gap: 10px;
 }
@@ -5272,5 +5591,45 @@ body {
 
   .remote-btn {
     min-height: 48px;
+  }
+}
+
+/* Mobile-only shell scrolling for the full dashboard (non-remote mode). */
+@media (max-width: 900px) {
+  html:not(.remote-mode),
+  body:not(.remote-mode),
+  body:not(.remote-mode) #root {
+    height: auto;
+    min-height: 100%;
+    overflow-x: hidden;
+    overflow-y: auto;
+  }
+
+  body:not(.remote-mode) .shell {
+    height: auto;
+    min-height: 100svh;
+    overflow: visible;
+  }
+
+  body:not(.remote-mode) .garmin-frame {
+    height: auto;
+    min-height: calc(100svh - 28px);
+    overflow: visible;
+  }
+
+  body:not(.remote-mode) .garmin-content--viewport,
+  body:not(.remote-mode) .garmin-content--viewport > .panel,
+  body:not(.remote-mode) .garmin-content--viewport > .home-panel,
+  body:not(.remote-mode) .garmin-content--viewport > .drill-panel,
+  body:not(.remote-mode) .garmin-content--viewport > .drill-panel > *:not(.panel__header) {
+    height: auto;
+    min-height: 0;
+    overflow: visible;
+  }
+
+  body:not(.remote-mode) .garmin-content--viewport > .drill-panel > .trip-route-map-shell {
+    height: 240px !important;
+    min-height: 220px !important;
+    overflow: hidden;
   }
 }

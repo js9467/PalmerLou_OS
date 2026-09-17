@@ -19,6 +19,7 @@ import {
 } from "./lib/trips";
 import {
   loadOceanBuoys,
+  loadStormRadarFrame,
   loadBluetoothState,
   loadLauncherState,
   loadRemoteAccessStatus,
@@ -1156,6 +1157,7 @@ export function App() {
   const [online, setOnline] = useState(true);
   const [selectedAppId, setSelectedAppId] = useState("streaming");
   const [selectedStreamId, setSelectedStreamId] = useState("youtube");
+  const [selectedMusicId, setSelectedMusicId] = useState("spotify");
   const [nowLabel, setNowLabel] = useState("Loading clock...");
   const [bluetoothState, setBluetoothState] = useState<BluetoothState>({
     status: "Bluetooth not configured",
@@ -1216,6 +1218,7 @@ export function App() {
   const [selectedFishCircleId, setSelectedFishCircleId] = useState<string | null>(null);
   const [fishingMapBounds, setFishingMapBounds] = useState<{ minLat: number; maxLat: number; minLng: number; maxLng: number } | null>(null);
   const [showFishingMapSettings, setShowFishingMapSettings] = useState(false);
+  const [fishingMapFullscreen, setFishingMapFullscreen] = useState(false);
   const [fishingMapRenderNonce, setFishingMapRenderNonce] = useState(0);
   const [speciesVisibility, setSpeciesVisibility] = useState<Record<string, boolean>>(() => {
     const defaults: Record<string, boolean> = {};
@@ -1226,6 +1229,10 @@ export function App() {
   });
   const [oceanBuoys, setOceanBuoys] = useState<OceanBuoyObservation[]>([]);
   const [loadingOceanBuoys, setLoadingOceanBuoys] = useState(false);
+  const [weatherRadarFullscreen, setWeatherRadarFullscreen] = useState(false);
+  const [stormRadarTileUrl, setStormRadarTileUrl] = useState<string | null>(null);
+  const [stormRadarFrameLabel, setStormRadarFrameLabel] = useState<string | null>(null);
+  const [loadingStormRadar, setLoadingStormRadar] = useState(false);
   const [speciesIntel, setSpeciesIntel] = useState<AllSpeciesIntelResponse | null>(null);
   const [loadingSpeciesIntel, setLoadingSpeciesIntel] = useState(false);
   const [expandedSpeciesIntel, setExpandedSpeciesIntel] = useState<string | null>(null);
@@ -1263,6 +1270,7 @@ export function App() {
   const [tripSession, setTripSession] = useState<TripLog | null>(null);
   const [selectedTripId, setSelectedTripId] = useState<string | null>(null);
   const [tripHomeRadiusNm, setTripHomeRadiusNm] = useState<number>(() => readTripHomeRadius());
+  const [tripMapFullscreen, setTripMapFullscreen] = useState(false);
   const activeTripRef = useRef<TripLog | null>(null);
   const activeSummary = summary ?? fallbackSummary;
 
@@ -1843,6 +1851,17 @@ export function App() {
     };
   }, [selectedStreamId]);
 
+  const selectedMusic = useMemo(() => {
+    return musicTargets.find((target) => target.id === selectedMusicId) ?? musicTargets[0] ?? {
+      id: "spotify",
+      name: "Spotify",
+      subtitle: "Music",
+      launchUrl: "https://open.spotify.com",
+      launchLabel: "Spotify",
+      logoPath: "/logos/spotify.svg"
+    };
+  }, [selectedMusicId]);
+
   const selectedNav = useMemo(() => navItems.find((item) => item.id === selectedNavId) ?? navItems[0] ?? {
     id: "home",
     label: "Home",
@@ -2253,6 +2272,173 @@ export function App() {
     return new Date(newestTimestamp).toLocaleString();
   }, [oceanBuoys]);
 
+  const nearbyMarineBuoys = useMemo(() => {
+    return displayedBuoys.filter((buoy) => !isLikelyLand({ latitude: buoy.latitude, longitude: buoy.longitude }));
+  }, [displayedBuoys]);
+
+  const nearestWaveBuoy = useMemo(() => {
+    return nearbyMarineBuoys.find((buoy) => buoy.waveHeightM !== null) ?? null;
+  }, [nearbyMarineBuoys]);
+
+  const currentWaveFeet = useMemo(() => {
+    if (!nearestWaveBuoy || nearestWaveBuoy.waveHeightM === null) {
+      return null;
+    }
+
+    return nearestWaveBuoy.waveHeightM * 3.28084;
+  }, [nearestWaveBuoy]);
+
+  const peakWaveFeet = useMemo(() => {
+    const values = nearbyMarineBuoys
+      .map((buoy) => buoy.waveHeightM)
+      .filter((value): value is number => value !== null)
+      .map((value) => value * 3.28084);
+
+    if (values.length === 0) {
+      return null;
+    }
+
+    return Math.max(...values);
+  }, [nearbyMarineBuoys]);
+
+  const avgBuoyWindKnots = useMemo(() => {
+    const values = nearbyMarineBuoys
+      .map((buoy) => buoy.windSpeedMps)
+      .filter((value): value is number => value !== null)
+      .map((value) => value * 1.94384);
+
+    if (values.length === 0) {
+      return null;
+    }
+
+    return values.reduce((sum, value) => sum + value, 0) / values.length;
+  }, [nearbyMarineBuoys]);
+
+  const buoyPressureTrend = useMemo(() => {
+    const timeline = nearbyMarineBuoys
+      .map((buoy) => ({
+        pressure: buoy.pressureHpa,
+        observedAt: new Date(buoy.observedAt).getTime()
+      }))
+      .filter((entry) => entry.pressure !== null && Number.isFinite(entry.observedAt))
+      .sort((a, b) => a.observedAt - b.observedAt);
+
+    if (timeline.length < 2) {
+      return {
+        label: "Steady",
+        delta: null as number | null
+      };
+    }
+
+    const splitIndex = Math.max(1, Math.floor(timeline.length / 2));
+    const older = timeline.slice(0, splitIndex);
+    const newer = timeline.slice(splitIndex);
+
+    if (older.length === 0 || newer.length === 0) {
+      return {
+        label: "Steady",
+        delta: null as number | null
+      };
+    }
+
+    const oldAvg = older.reduce((sum, entry) => sum + (entry.pressure ?? 0), 0) / older.length;
+    const newAvg = newer.reduce((sum, entry) => sum + (entry.pressure ?? 0), 0) / newer.length;
+    const delta = newAvg - oldAvg;
+
+    if (delta <= -1.5) {
+      return { label: "Falling", delta };
+    }
+
+    if (delta >= 1.5) {
+      return { label: "Rising", delta };
+    }
+
+    return { label: "Steady", delta };
+  }, [nearbyMarineBuoys]);
+
+  const weatherForecastCards = useMemo(() => {
+    const baseWind = avgBuoyWindKnots ?? weatherWindValue ?? 12;
+    const baseWave = currentWaveFeet ?? peakWaveFeet ?? 3.5;
+    const pressurePush = buoyPressureTrend.label === "Falling"
+      ? 1
+      : buoyPressureTrend.label === "Rising"
+        ? -1
+        : 0;
+
+    const buildCard = (label: string, hourOffset: number) => {
+      const wind = Math.max(0, baseWind + (pressurePush * (hourOffset / 6)) + (hourOffset === 12 ? 1 : 0));
+      const wave = Math.max(0.5, baseWave + ((wind - baseWind) * 0.14));
+
+      let outlook = "Stable marine run";
+      if (wave >= 6.5 || wind >= 24) {
+        outlook = "Hazardous run window";
+      } else if (wave >= 4.5 || wind >= 18) {
+        outlook = "Bumpy offshore legs";
+      } else if (wave <= 2.5 && wind <= 12) {
+        outlook = "Clean travel window";
+      }
+
+      return {
+        label,
+        wind,
+        wave,
+        outlook
+      };
+    };
+
+    return [
+      buildCard("Now", 0),
+      buildCard("+6h", 6),
+      buildCard("+12h", 12)
+    ];
+  }, [avgBuoyWindKnots, buoyPressureTrend.label, currentWaveFeet, peakWaveFeet, weatherWindValue]);
+
+  useEffect(() => {
+    if (selectedNavId !== "weather") {
+      return;
+    }
+
+    let active = true;
+    setLoadingStormRadar(true);
+
+    loadStormRadarFrame()
+      .then((payload) => {
+        if (!active) {
+          return;
+        }
+
+        if (!payload.available || !payload.tileUrlTemplate) {
+          setStormRadarTileUrl(null);
+          setStormRadarFrameLabel("Radar feed unavailable");
+          return;
+        }
+
+        setStormRadarTileUrl(payload.tileUrlTemplate);
+        setStormRadarFrameLabel(
+          payload.observedAt
+            ? new Date(payload.observedAt).toLocaleString()
+            : "Live frame"
+        );
+      })
+      .catch(() => {
+        if (!active) {
+          return;
+        }
+
+        setStormRadarTileUrl(null);
+        setStormRadarFrameLabel("Radar feed unavailable");
+      })
+      .finally(() => {
+        if (active) {
+          setLoadingStormRadar(false);
+        }
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [selectedNavId]);
+
   const allFishMappingCircles = useMemo<FishMappingCircle[]>(() => {
     // When species intel is available use its independently-scored per-species locations
     if (speciesIntel && speciesIntel.species.length > 0) {
@@ -2463,7 +2649,7 @@ export function App() {
   }
 
   useEffect(() => {
-    if (selectedNavId !== "fishing") {
+    if (selectedNavId !== "fishing" && selectedNavId !== "weather") {
       return;
     }
 
@@ -2504,12 +2690,39 @@ export function App() {
   }, [fishingMapBounds, fishingMapCenter, selectedNavId]);
 
   useEffect(() => {
+    if (selectedNavId !== "weather") {
+      setWeatherRadarFullscreen(false);
+    }
+  }, [selectedNavId]);
+
+  useEffect(() => {
+    if (selectedNavId !== "trips") {
+      setTripMapFullscreen(false);
+    }
+  }, [selectedNavId]);
+
+  useEffect(() => {
+    if (selectedNavId !== "fishing" || fishingSubview !== "map") {
+      setFishingMapFullscreen(false);
+    }
+  }, [fishingSubview, selectedNavId]);
+
+  useEffect(() => {
     if (selectedNavId !== "fishing") {
       return;
     }
 
     setFishingMapRenderNonce((current) => current + 1);
   }, [selectedNavId]);
+
+  useEffect(() => {
+    if (selectedNavId !== "fishing" || fishingSubview !== "map") {
+      return;
+    }
+
+    // Leaflet needs a fresh size pass when the map shell jumps to fullscreen.
+    setFishingMapRenderNonce((current) => current + 1);
+  }, [fishingMapFullscreen, fishingSubview, selectedNavId]);
 
   useEffect(() => {
     if (selectedNavId === "fishing") {
@@ -2743,6 +2956,8 @@ export function App() {
   async function launchAppTarget(target: LaunchTarget, section: "streaming" | "music") {
     if (section === "streaming") {
       setSelectedStreamId(target.id);
+    } else {
+      setSelectedMusicId(target.id);
     }
 
     setSelectedAppId(section);
@@ -3168,6 +3383,55 @@ export function App() {
     );
   }
 
+  function renderWeatherRadarMap(mapClassName: string) {
+    return (
+      <MapContainer center={fishingMapCenter} zoom={6} className={mapClassName} scrollWheelZoom={false} attributionControl={false}>
+        <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
+        {stormRadarTileUrl ? (
+          <TileLayer url={stormRadarTileUrl} opacity={0.72} zIndex={450} />
+        ) : null}
+        {nearbyMarineBuoys.map((buoy) => {
+          const waveFeet = buoy.waveHeightM === null ? null : buoy.waveHeightM * 3.28084;
+          const windKnots = buoy.windSpeedMps === null ? null : buoy.windSpeedMps * 1.94384;
+          const color = waveFeet === null
+            ? "#89a3bc"
+            : waveFeet >= 7
+              ? "#ff6f6f"
+              : waveFeet >= 4.5
+                ? "#f4c86a"
+                : "#6ad8a2";
+
+          return (
+            <CircleMarker
+              key={`${buoy.stationId}-${buoy.observedAt}`}
+              center={[buoy.latitude, buoy.longitude]}
+              radius={waveFeet === null ? 5 : Math.min(13, Math.max(5, waveFeet * 1.2))}
+              pathOptions={{
+                color,
+                fillColor: color,
+                fillOpacity: 0.6,
+                weight: 1
+              }}
+            >
+              <Tooltip direction="top" offset={[0, -8]}>
+                <div>{buoy.stationId}</div>
+                <div>Wave {waveFeet === null ? "--" : `${waveFeet.toFixed(1)} ft`}</div>
+                <div>Wind {windKnots === null ? "--" : `${windKnots.toFixed(1)} kt`}</div>
+              </Tooltip>
+            </CircleMarker>
+          );
+        })}
+        {vesselPosition ? (
+          <Circle
+            center={[vesselPosition.latitude, vesselPosition.longitude]}
+            radius={6500}
+            pathOptions={{ color: "#59baff", fillColor: "#59baff", fillOpacity: 0.1, weight: 1 }}
+          />
+        ) : null}
+      </MapContainer>
+    );
+  }
+
   function renderSectionContent() {
     if (selectedNavId === "home") {
       return (
@@ -3184,10 +3448,6 @@ export function App() {
 
           <section className="home-splash__tiles-panel" aria-label="Configurable home tiles">
             <div className="home-splash__tiles-toolbar">
-              <div>
-                <p className="panel__eyebrow">Quick data tiles</p>
-                <h3>Modular layout</h3>
-              </div>
               <div className="home-splash__tiles-actions">
                 <button className="theme-toggle" type="button" onClick={() => setEditingHomeTiles((current) => !current)}>
                   {editingHomeTiles ? "Done" : "Customize tiles"}
@@ -3231,10 +3491,7 @@ export function App() {
 
           <section className="home-splash__trend-card" aria-label="Depth and water temperature trend">
             <div className="home-splash__trend-header">
-              <div>
-                <p className="panel__eyebrow">Water breaks</p>
-                <h3>Depth and temperature trend</h3>
-              </div>
+              <h3>Trend</h3>
               <div className="home-splash__trend-values">
                 <span className="home-splash__trend-mode">Live samples</span>
                 <span>Depth {homeInstruments.depthFeet === null ? "--" : `${homeInstruments.depthFeet.toFixed(0)} ft`}</span>
@@ -3304,82 +3561,139 @@ export function App() {
 
     if (selectedNavId === "music") {
       return (
-        <section className="panel drill-panel">
-          <div className="panel__header">
-            <div>
-              <p className="panel__eyebrow">Music</p>
-              <h2>Music apps</h2>
+        <section className="panel drill-panel drill-panel--streaming">
+          <div className="tv-commandbar">
+            <div className="tv-commandbar__left">
+              <span className="panel__eyebrow">Music</span>
+              <strong>{selectedMusic.name}</strong>
+            </div>
+            <div className="tv-commandbar__actions">
+              <button className="theme-toggle theme-toggle--primary" type="button" onClick={() => void launchAppTarget(selectedMusic, "music") }>
+                {launching ? "Opening..." : selectedMusic.name}
+              </button>
             </div>
           </div>
 
           {remoteMode ? (
             <div className="remote-launch-status" aria-live="polite">
-              <strong>{launching ? "Sending music app to touchscreen..." : `${launcherState.name || "No app"}: ${launcherState.status}`}</strong>
+              <strong>{launching ? `Sending ${selectedMusic.name} to touchscreen...` : `${launcherState.name || "No app"}: ${launcherState.status}`}</strong>
               <span>{launcherState.message}</span>
             </div>
           ) : null}
 
-          <div className="music-launcher-grid">
-            {musicTargets.map((target) => (
-              <button key={target.id} type="button" className="music-launcher-card" onClick={() => void launchAppTarget(target, "music")}>
-                <BrandGlyph logoPath={target.logoPath} className="music-launcher-card__logo" />
-                <div className="music-launcher-card__copy">
-                  <strong>{target.name}</strong>
+          <div className="tv-tile-grid" role="list" aria-label="Music app launch tiles">
+            {musicTargets.map((target, index) => {
+              const accent = index % 2 === 0 ? "aqua" : "gold";
+              return (
+                <button
+                  key={target.id}
+                  className={
+                    target.id === selectedMusicId
+                      ? `tv-launch-tile tv-launch-tile--active stream-app-tile stream-app-tile--${accent}`
+                      : `tv-launch-tile stream-app-tile stream-app-tile--${accent}`
+                  }
+                  type="button"
+                  onClick={() => {
+                    setSelectedMusicId(target.id);
+                    void launchAppTarget(target, "music");
+                  }}
+                  aria-label={target.name}
+                  title={target.name}
+                >
+                  <BrandGlyph logoPath={target.logoPath} className="stream-app-tile__logo" />
+                  <div className="tv-launch-tile__copy">
+                    <span className="stream-app-tile__label">{target.name}</span>
+                  </div>
+                </button>
+              );
+            })}
                 </div>
-              </button>
-            ))}
-          </div>
         </section>
       );
     }
 
     if (selectedNavId === "weather") {
+      if (weatherRadarFullscreen) {
+        return (
+          <div className="camera-fullscreen weather-radar-fullscreen" role="dialog" aria-label="Fullscreen storm radar">
+            {renderWeatherRadarMap("weather-radar-map weather-radar-map--fullscreen")}
+            <div className="weather-radar-fullscreen__hud">
+              <strong>Storm Doppler radar</strong>
+              <span>{stormRadarFrameLabel ? `Radar frame: ${stormRadarFrameLabel}` : "Radar frame unavailable"}</span>
+              <span>Buoy sample: {latestBuoyObservationLabel}</span>
+            </div>
+            <button className="camera-fullscreen__exit" type="button" onClick={() => setWeatherRadarFullscreen(false)}
+              aria-label="Exit fullscreen radar">
+              ✕
+            </button>
+          </div>
+        );
+      }
+
       return (
-        <section className="panel drill-panel">
+        <section className="panel drill-panel weather-panel">
           <div className="panel__header">
             <div>
               <p className="panel__eyebrow">Weather</p>
-              <h2>Forecast and conditions</h2>
+              <h2>Marine weather</h2>
             </div>
             <span className={online ? "status-pill status-pill--success" : "status-pill"}>{online ? "Online" : "Fallback"}</span>
           </div>
-          <div className="home-panel__quick-grid">
-            <article className="home-panel__quick-card"><span className="home-panel__quick-label">Wind</span><strong>{activeSummary.weather.wind}</strong></article>
-            <article className="home-panel__quick-card"><span className="home-panel__quick-label">Barometer</span><strong>{activeSummary.weather.barometer}</strong></article>
-            <article className="home-panel__quick-card"><span className="home-panel__quick-label">Water</span><strong>{activeSummary.weather.waterTemp}</strong></article>
-            <article className="home-panel__quick-card"><span className="home-panel__quick-label">Tide</span><strong>{activeSummary.weather.tide}</strong></article>
+          <div className="weather-strip" role="list" aria-label="Current marine weather values">
+            <article className="weather-strip__card" role="listitem"><span>Current wave</span><strong>{currentWaveFeet === null ? "--" : `${currentWaveFeet.toFixed(1)} ft`}</strong></article>
+            <article className="weather-strip__card" role="listitem"><span>Peak wave nearby</span><strong>{peakWaveFeet === null ? "--" : `${peakWaveFeet.toFixed(1)} ft`}</strong></article>
+            <article className="weather-strip__card" role="listitem"><span>Wind</span><strong>{avgBuoyWindKnots === null ? activeSummary.weather.wind : `${avgBuoyWindKnots.toFixed(1)} kt`}</strong></article>
+            <article className="weather-strip__card" role="listitem"><span>Pressure trend</span><strong>{buoyPressureTrend.label}</strong></article>
           </div>
 
-          <div className="trip-detail panel" style={{ marginTop: 14, padding: 16 }}>
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
-              <div>
-                <p className="panel__eyebrow" style={{ margin: 0 }}>Marine outlook</p>
-                <h3 style={{ margin: "4px 0 0" }}>{seaStateLabel}</h3>
+          <div className="weather-layout">
+            <section className="weather-radar-card" aria-label="Storm radar">
+              <div className="weather-radar-card__header">
+                <div>
+                  <p className="panel__eyebrow">Radar</p>
+                  <h3>Storm Doppler radar</h3>
+                </div>
+                <div className="weather-radar-card__actions">
+                  <span className="trip-card__tag">{loadingStormRadar ? "Loading frame" : "Live radar"}</span>
+                  <button className="camera-fullscreen-btn" type="button" onClick={() => setWeatherRadarFullscreen(true)}
+                    aria-label="Enter fullscreen radar">⛶</button>
+                </div>
               </div>
-              <span className="trip-card__tag">{nmeaOnline ? "Live NMEA" : "Fallback sensors"}</span>
-            </div>
 
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 8, marginTop: 10 }}>
-              <div><strong>{weatherWindValue === null ? "--" : `${weatherWindValue.toFixed(1)} kt`}</strong><div>wind speed</div></div>
-              <div><strong>{weatherBarometerValue === null ? "--" : `${weatherBarometerValue.toFixed(0)}`}</strong><div>barometer</div></div>
-              <div><strong>{homeInstruments.depthFeet === null ? "--" : `${homeInstruments.depthFeet.toFixed(0)} ft`}</strong><div>current depth</div></div>
-              <div><strong>{waterTempF === null ? "--" : `${waterTempF.toFixed(1)} F`}</strong><div>water temp</div></div>
-            </div>
+              <div className="weather-radar-map-shell">
+                {renderWeatherRadarMap("weather-radar-map")}
+              </div>
+              <p className="weather-radar-card__note">Radar frame: {stormRadarFrameLabel ?? "Waiting for feed"}</p>
+              <p className="weather-radar-card__note">Nearest buoy sample: {latestBuoyObservationLabel}</p>
+            </section>
+
+            <section className="weather-forecast" aria-label="Marine forecast">
+              <div className="weather-forecast__header">
+                <div>
+                  <p className="panel__eyebrow">Forecast</p>
+                  <h3>12 hour outlook</h3>
+                </div>
+                <span className="trip-card__tag">{seaStateLabel}</span>
+              </div>
+              <div className="weather-forecast__grid">
+                {weatherForecastCards.map((card) => (
+                  <article key={card.label} className="weather-forecast__card">
+                    <span>{card.label}</span>
+                    <strong>{card.wave.toFixed(1)} ft</strong>
+                    <div>{card.wind.toFixed(0)} kt wind</div>
+                    <p>{card.outlook}</p>
+                  </article>
+                ))}
+              </div>
+
+              <div className="weather-forecast__foot">
+                <article className="weather-forecast__stat"><span>Barometer</span><strong>{activeSummary.weather.barometer}</strong></article>
+                <article className="weather-forecast__stat"><span>Tide</span><strong>{activeSummary.weather.tide}</strong></article>
+                <article className="weather-forecast__stat"><span>Water temp</span><strong>{activeSummary.weather.waterTemp}</strong></article>
+                <article className="weather-forecast__stat"><span>Depth</span><strong>{homeInstruments.depthFeet === null ? "--" : `${homeInstruments.depthFeet.toFixed(0)} ft`}</strong></article>
+              </div>
+            </section>
           </div>
-
-          <section className="home-splash__trend-card" aria-label="Recent depth and water temperature">
-            <div className="home-splash__trend-header">
-              <div>
-                <p className="panel__eyebrow">Recent feed</p>
-                <h3>Depth and temperature trend</h3>
-              </div>
-              <div className="home-splash__trend-values">
-                <span className="home-splash__trend-mode">Live samples</span>
-                <span>{nmeaOnline ? "Signal K + onboard" : "Fallback model"}</span>
-              </div>
-            </div>
-            <DepthTempGraph points={renderedDepthTempTrend} />
-          </section>
         </section>
       );
     }
@@ -3390,27 +3704,39 @@ export function App() {
           <div className="panel__header">
             <div>
               <p className="panel__eyebrow">Fishing</p>
-              <h2>{fishingSubview === "map" ? "Dedicated tactical map" : "Catch log and pelagic intel"}</h2>
+              <h2>Fishing</h2>
             </div>
-            <div className="fishing-page-switch" role="tablist" aria-label="Fishing pages">
-              <button
-                type="button"
-                role="tab"
-                aria-selected={fishingSubview === "map"}
-                className={fishingSubview === "map" ? "theme-toggle theme-toggle--primary" : "theme-toggle"}
-                onClick={() => setFishingSubview("map")}
-              >
-                Map
-              </button>
-              <button
-                type="button"
-                role="tab"
-                aria-selected={fishingSubview === "logbook"}
-                className={fishingSubview === "logbook" ? "theme-toggle theme-toggle--primary" : "theme-toggle"}
-                onClick={() => setFishingSubview("logbook")}
-              >
-                Logbook
-              </button>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+              {fishingSubview === "map" ? (
+                <button
+                  type="button"
+                  className="camera-fullscreen-btn"
+                  onClick={() => setFishingMapFullscreen(true)}
+                  aria-label="Enter fullscreen fishing map"
+                >
+                  ⛶
+                </button>
+              ) : null}
+              <div className="fishing-page-switch" role="tablist" aria-label="Fishing pages">
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={fishingSubview === "map"}
+                  className={fishingSubview === "map" ? "theme-toggle theme-toggle--primary" : "theme-toggle"}
+                  onClick={() => setFishingSubview("map")}
+                >
+                  Map
+                </button>
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={fishingSubview === "logbook"}
+                  className={fishingSubview === "logbook" ? "theme-toggle theme-toggle--primary" : "theme-toggle"}
+                  onClick={() => setFishingSubview("logbook")}
+                >
+                  Logbook
+                </button>
+              </div>
             </div>
           </div>
 
@@ -3727,7 +4053,7 @@ export function App() {
                   </>
                 ) : null}
 
-                <div className="fishing-map-shell" aria-label="Fishing catch map">
+                <div className={fishingMapFullscreen ? "fishing-map-shell fishing-map-shell--fullscreen" : "fishing-map-shell"} aria-label="Fishing catch map">
                   {fishingSubview === "map" ? (
                     <button
                       type="button"
@@ -3737,6 +4063,16 @@ export function App() {
                       aria-controls="fishing-map-settings"
                     >
                       {showFishingMapSettings ? "Close map settings" : "Map settings"}
+                    </button>
+                  ) : null}
+                  {fishingMapFullscreen ? (
+                    <button
+                      type="button"
+                      className="camera-fullscreen__exit"
+                      onClick={() => setFishingMapFullscreen(false)}
+                      aria-label="Exit fullscreen fishing map"
+                    >
+                      ✕
                     </button>
                   ) : null}
                   {fishingSubview === "map" && showFishingMapSettings ? (
@@ -3866,12 +4202,12 @@ export function App() {
                       </div>
                     </aside>
                   ) : null}
-                  {tacticalMapFallback ? (
+                  {!fishingMapFullscreen && tacticalMapFallback ? (
                     <div className="fishing-map-local-status">
                       Public tile network unavailable. Local tactical mode active with live vessel GPS, catch history, and species intelligence.
                     </div>
                   ) : null}
-                  {noBuoySignalCoverage ? (
+                  {!fishingMapFullscreen && noBuoySignalCoverage ? (
                     <div className="fishing-map-local-status fishing-map-local-status--warning">
                       No NOAA buoys returned in this viewport. Signal fronts are running in fallback mode until buoy coverage is found.
                     </div>
@@ -3888,7 +4224,9 @@ export function App() {
                       fadeAnimation={false}
                       markerZoomAnimation={false}
                       className="fishing-map-canvas"
-                      style={{ height: "clamp(300px, 48vh, 620px)", width: "100%" }}
+                      style={fishingMapFullscreen
+                        ? { height: "100vh", width: "100vw" }
+                        : { height: "clamp(300px, 48vh, 620px)", width: "100%" }}
                     >
                       <FishingMapRuntimeGuard />
                     {vesselPosition ? (
@@ -4056,7 +4394,7 @@ export function App() {
                       />
                     ])}
                     </MapContainer>
-                  {fishMappingCircles.length > 0 && (
+                  {!fishingMapFullscreen && fishMappingCircles.length > 0 && (
                     <div className="fishing-map-intel-legend">
                       {fishMappingCircles.map((circle) => {
                         const refLat = vesselPosition?.latitude ?? fishingMapCenter[0];
@@ -4081,21 +4419,23 @@ export function App() {
                       })}
                     </div>
                   )}
-                  <p className="fishing-map-attribution">
-                    {fishingBasemap === "nautical"
-                      ? "Map data: OpenStreetMap + OpenSeaMap contributors"
-                      : fishingBasemap === "satellite"
-                        ? "Map data: Esri World Imagery"
-                        : "Map data: OpenStreetMap contributors"}
-                    {enabledOceanOverlays.sst || enabledOceanOverlays.chlorophyll || enabledOceanOverlays.currents
-                      ? ` | Ocean layers: NASA GIBS (${fishingMapOverlayDate})`
-                      : ""}
-                    {enabledOceanOverlays.contours ? " | Contours: Esri Ocean Reference" : ""}
-                    {enabledOceanOverlays.fronts ? " | Fronts: tactical seam model" : ""}
-                    {fishingAdvisor?.oceanSignals?.fronts?.length
-                      ? ` | Tactical fronts: ${fishingAdvisor.oceanSignals.fronts.length}`
-                      : " | Tactical fronts: fallback model"}
-                  </p>
+                  {!fishingMapFullscreen ? (
+                    <p className="fishing-map-attribution">
+                      {fishingBasemap === "nautical"
+                        ? "Map data: OpenStreetMap + OpenSeaMap contributors"
+                        : fishingBasemap === "satellite"
+                          ? "Map data: Esri World Imagery"
+                          : "Map data: OpenStreetMap contributors"}
+                      {enabledOceanOverlays.sst || enabledOceanOverlays.chlorophyll || enabledOceanOverlays.currents
+                        ? ` | Ocean layers: NASA GIBS (${fishingMapOverlayDate})`
+                        : ""}
+                      {enabledOceanOverlays.contours ? " | Contours: Esri Ocean Reference" : ""}
+                      {enabledOceanOverlays.fronts ? " | Fronts: tactical seam model" : ""}
+                      {fishingAdvisor?.oceanSignals?.fronts?.length
+                        ? ` | Tactical fronts: ${fishingAdvisor.oceanSignals.fronts.length}`
+                        : " | Tactical fronts: fallback model"}
+                    </p>
+                  ) : null}
                 </div>
 
                 {fishingSubview === "logbook" ? (
@@ -4350,6 +4690,31 @@ export function App() {
       const tripDetail = selectedTrip ?? tripSession ?? tripHistory[0] ?? null;
       const breadcrumbRows = tripDetail?.breadcrumbs.slice(-25).reverse() ?? [];
 
+      const renderTripRouteMap = (mapClassName: string) => (
+        <MapContainer center={activeTripCenter} zoom={11} scrollWheelZoom={false} attributionControl={false} className={mapClassName}>
+          <TileLayer
+            attribution='&copy; OpenStreetMap contributors'
+            url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+          />
+          {activeTripPoints.length > 1 ? <Polyline positions={activeTripPoints} pathOptions={{ color: "#39d0ff", weight: 4, opacity: 0.9 }} /> : null}
+          {activeTripPoints.map((point, index) => (
+            <CircleMarker key={`${point[0]}-${point[1]}-${index}`} center={point} radius={3} pathOptions={{ color: "#fff", fillColor: "#39d0ff", fillOpacity: 1, weight: 1 }} />
+          ))}
+        </MapContainer>
+      );
+
+      if (tripMapFullscreen) {
+        return (
+          <div className="camera-fullscreen weather-radar-fullscreen" role="dialog" aria-label="Fullscreen trip map">
+            {renderTripRouteMap("trip-route-map trip-route-map--fullscreen")}
+            <button className="camera-fullscreen__exit" type="button" onClick={() => setTripMapFullscreen(false)}
+              aria-label="Exit fullscreen trip map">
+              ✕
+            </button>
+          </div>
+        );
+      }
+
       return (
         <section className="panel drill-panel">
           <div className="panel__header">
@@ -4357,7 +4722,11 @@ export function App() {
               <p className="panel__eyebrow">Trips</p>
               <h2>Recent runs and summaries</h2>
             </div>
-            <span className="status-pill status-pill--success">{tripHistory.length} trips</span>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <span className="status-pill status-pill--success">{tripHistory.length} trips</span>
+              <button className="camera-fullscreen-btn" type="button" onClick={() => setTripMapFullscreen(true)}
+                aria-label="Enter fullscreen trip map">⛶</button>
+            </div>
           </div>
 
           <div className="trip-controls" style={{ display: "flex", gap: 12, marginBottom: 16, alignItems: "center", flexWrap: "wrap" }}>
@@ -4404,20 +4773,9 @@ export function App() {
             </div>
           ) : null}
 
-          {activeTripPoints.length > 0 ? (
-            <div style={{ height: 220, width: "100%", marginBottom: 16, borderRadius: 12, overflow: "hidden" }}>
-              <MapContainer center={activeTripCenter} zoom={11} scrollWheelZoom={false} style={{ height: "100%", width: "100%" }}>
-                <TileLayer
-                  attribution='&copy; OpenStreetMap contributors'
-                  url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-                />
-                {activeTripPoints.length > 1 ? <Polyline positions={activeTripPoints} pathOptions={{ color: "#39d0ff", weight: 4, opacity: 0.9 }} /> : null}
-                {activeTripPoints.map((point, index) => (
-                  <CircleMarker key={`${point[0]}-${point[1]}-${index}`} center={point} radius={3} pathOptions={{ color: "#fff", fillColor: "#39d0ff", fillOpacity: 1, weight: 1 }} />
-                ))}
-              </MapContainer>
-            </div>
-          ) : null}
+          <div className="trip-route-map-shell">
+            {renderTripRouteMap("trip-route-map")}
+          </div>
 
           {breadcrumbRows.length > 0 ? (
             <div className="panel" style={{ marginBottom: 16, padding: 16 }}>

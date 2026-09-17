@@ -1,8 +1,9 @@
 import http from "node:http";
 import { createReadStream, existsSync, statSync } from "node:fs";
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcessByStdio } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import type { Readable } from "node:stream";
 import { applyBluetoothAction, getBluetoothState, runBluetoothDiagnostics, scanBluetoothDevices, configureBluetoothDevice, type BluetoothAction } from "./bluetooth.js";
 import { dashboardSummary } from "./mock-data.js";
 import { getNmeaTelemetry } from "./nmea.js";
@@ -22,7 +23,27 @@ const currentChannel = dashboardSummary.version.channel;
 const oceanTileCache = new Map<string, { expiresAt: number; contentType: string; body: Buffer }>();
 const OCEAN_TILE_CACHE_TTL_MS = 1000 * 60 * 15;
 const OCEAN_TILE_CACHE_LIMIT = 1200;
+const stormRadarTileCache = new Map<string, { expiresAt: number; contentType: string; body: Buffer }>();
+const STORM_RADAR_TILE_CACHE_TTL_MS = 1000 * 60 * 5;
+const STORM_RADAR_TILE_CACHE_LIMIT = 1600;
+const STORM_RADAR_FRAME_TTL_MS = 1000 * 60 * 3;
+const CAMERA_STREAM_STOP_DELAY_MS = 5000;
 const TRANSPARENT_PNG_BUFFER = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/w8AAgMBgBqWcN0AAAAASUVORK5CYII=", "base64");
+
+let cameraStreamProcess: ChildProcessByStdio<null, Readable, null> | null = null;
+let cameraStreamStopTimer: NodeJS.Timeout | null = null;
+const cameraStreamClients = new Set<http.ServerResponse>();
+
+type RainViewerFrame = {
+  path: string;
+  time: number | null;
+};
+
+let stormRadarFrameCache: {
+  fetchedAt: number;
+  host: string;
+  frame: RainViewerFrame | null;
+} | null = null;
 
 type OceanTileSource = "sst" | "chlorophyll" | "currents";
 
@@ -239,6 +260,84 @@ function pruneOceanTileCache() {
 
     oceanTileCache.delete(key);
   }
+}
+
+function pruneStormRadarTileCache() {
+  const now = Date.now();
+
+  for (const [key, entry] of stormRadarTileCache.entries()) {
+    if (entry.expiresAt <= now) {
+      stormRadarTileCache.delete(key);
+    }
+  }
+
+  if (stormRadarTileCache.size <= STORM_RADAR_TILE_CACHE_LIMIT) {
+    return;
+  }
+
+  const overage = stormRadarTileCache.size - STORM_RADAR_TILE_CACHE_LIMIT;
+  const keys = stormRadarTileCache.keys();
+  for (let index = 0; index < overage; index += 1) {
+    const key = keys.next().value;
+    if (!key) {
+      break;
+    }
+
+    stormRadarTileCache.delete(key);
+  }
+}
+
+async function loadStormRadarFrame() {
+  const now = Date.now();
+  if (stormRadarFrameCache && (now - stormRadarFrameCache.fetchedAt) < STORM_RADAR_FRAME_TTL_MS) {
+    return stormRadarFrameCache;
+  }
+
+  const response = await fetch("https://api.rainviewer.com/public/weather-maps.json", {
+    headers: {
+      "User-Agent": "Palmer-Lou-OS/1.0 (+storm-radar-proxy)"
+    },
+    signal: AbortSignal.timeout(12000)
+  });
+
+  if (!response.ok) {
+    throw new Error(`Radar metadata unavailable (${response.status})`);
+  }
+
+  const payload = await response.json() as {
+    host?: string;
+    radar?: {
+      past?: Array<{ path?: string; time?: number }>;
+      nowcast?: Array<{ path?: string; time?: number }>;
+      future?: Array<{ path?: string; time?: number }>;
+    };
+  };
+
+  const hostRaw = (payload.host ?? "https://tilecache.rainviewer.com").trim();
+  const host = hostRaw.length > 0 ? hostRaw.replace(/\/$/, "") : "https://tilecache.rainviewer.com";
+  const pastFrames = payload.radar?.past ?? [];
+  const nowcastFrames = payload.radar?.nowcast ?? [];
+  const futureFrames = payload.radar?.future ?? [];
+  const latest = [...pastFrames, ...nowcastFrames, ...futureFrames]
+    .filter((frame): frame is { path: string; time?: number } => typeof frame.path === "string" && frame.path.length > 0)
+    .at(-1) ?? null;
+
+  stormRadarFrameCache = {
+    fetchedAt: now,
+    host,
+    frame: latest ? {
+      path: latest.path,
+      time: typeof latest.time === "number" ? latest.time : null
+    } : null
+  };
+
+  return stormRadarFrameCache;
+}
+
+function buildStormRadarTileUrl(host: string, framePath: string, z: number, x: number, y: number) {
+  const safePath = framePath.startsWith("/") ? framePath : `/${framePath}`;
+  const normalizedPath = safePath.replace(/\/$/, "");
+  return `${host}${normalizedPath}/256/${z}/${x}/${y}/2/1_1.png`;
 }
 
 function parseNumericToken(token: string | undefined): number | null {
@@ -1182,6 +1281,126 @@ function sendFile(filePath: string, res: http.ServerResponse) {
   createReadStream(filePath).pipe(res);
 }
 
+function removeCameraClient(res: http.ServerResponse) {
+  if (!cameraStreamClients.delete(res)) {
+    return;
+  }
+
+  if (cameraStreamClients.size > 0) {
+    return;
+  }
+
+  if (cameraStreamStopTimer) {
+    clearTimeout(cameraStreamStopTimer);
+  }
+
+  cameraStreamStopTimer = setTimeout(() => {
+    if (cameraStreamClients.size > 0) {
+      return;
+    }
+
+    if (cameraStreamProcess) {
+      try {
+        cameraStreamProcess.kill("SIGTERM");
+      } catch {
+        // Process is already gone.
+      }
+      cameraStreamProcess = null;
+    }
+  }, CAMERA_STREAM_STOP_DELAY_MS);
+}
+
+function startCameraBroadcast() {
+  if (cameraStreamProcess) {
+    return;
+  }
+
+  const device = process.env.PALMER_LOU_CAMERA_DEVICE ?? "/dev/video0";
+  if (!existsSync(device)) {
+    for (const client of cameraStreamClients) {
+      if (client.writableEnded || client.destroyed) {
+        continue;
+      }
+      client.write("--ffmpeg\r\nContent-Type: text/plain\r\n\r\nCamera device not found\r\n");
+      client.end();
+    }
+    cameraStreamClients.clear();
+    return;
+  }
+
+  const ff = spawn("ffmpeg", [
+    "-f", "v4l2",
+    "-framerate", "30",
+    "-i", device,
+    "-vf", "scale=960:-2",
+    "-f", "mpjpeg",
+    "-q:v", "8",
+    "-"
+  ], { stdio: ["ignore", "pipe", "ignore"] });
+
+  cameraStreamProcess = ff;
+
+  ff.stdout.on("data", (chunk: Buffer) => {
+    for (const client of Array.from(cameraStreamClients)) {
+      if (client.writableEnded || client.destroyed) {
+        removeCameraClient(client);
+        continue;
+      }
+
+      try {
+        client.write(chunk);
+      } catch {
+        try {
+          client.end();
+        } catch {
+          // Ignore close errors.
+        }
+        removeCameraClient(client);
+      }
+    }
+  });
+
+  const handleCameraExit = () => {
+    if (cameraStreamProcess === ff) {
+      cameraStreamProcess = null;
+    }
+
+    if (cameraStreamClients.size > 0) {
+      setTimeout(() => {
+        if (cameraStreamClients.size > 0 && !cameraStreamProcess) {
+          startCameraBroadcast();
+        }
+      }, 600);
+    }
+  };
+
+  ff.on("close", handleCameraExit);
+  ff.on("error", handleCameraExit);
+}
+
+function attachCameraClient(req: http.IncomingMessage, res: http.ServerResponse) {
+  if (cameraStreamStopTimer) {
+    clearTimeout(cameraStreamStopTimer);
+    cameraStreamStopTimer = null;
+  }
+
+  res.writeHead(200, {
+    "Content-Type": "multipart/x-mixed-replace; boundary=ffmpeg",
+    "Cache-Control": "no-cache, no-store, must-revalidate",
+    "Pragma": "no-cache",
+    "Connection": "close"
+  });
+
+  cameraStreamClients.add(res);
+  startCameraBroadcast();
+
+  const cleanup = () => removeCameraClient(res);
+  req.on("close", cleanup);
+  req.on("error", cleanup);
+  res.on("close", cleanup);
+  res.on("error", cleanup);
+}
+
 function withinUiDist(filePath: string) {
   const resolved = path.resolve(filePath);
   return resolved === uiDist || resolved.startsWith(`${uiDist}${path.sep}`);
@@ -1328,31 +1547,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (pathname === "/api/camera/stream" && req.method === "GET") {
-    const device = process.env.PALMER_LOU_CAMERA_DEVICE ?? "/dev/video0";
-    if (!existsSync(device)) {
-      res.writeHead(503, { "Content-Type": "text/plain" });
-      res.end("Camera device not found");
-      return;
-    }
-    res.writeHead(200, {
-      "Content-Type": "multipart/x-mixed-replace; boundary=ffmpeg",
-      "Cache-Control": "no-cache, no-store, must-revalidate",
-      "Connection": "close"
-    });
-    const ff = spawn("ffmpeg", [
-      "-f", "v4l2",
-      "-framerate", "30",
-      "-i", device,
-      "-vf", "scale=960:-2",
-      "-f", "mpjpeg",
-      "-q:v", "8",
-      "-"
-    ], { stdio: ["ignore", "pipe", "ignore"] });
-    ff.stdout.pipe(res);
-    const cleanup = () => { try { ff.kill(); } catch { /* already gone */ } };
-    req.on("close", cleanup);
-    req.on("error", cleanup);
-    ff.on("error", cleanup);
+    attachCameraClient(req, res);
     return;
   }
 
@@ -1630,6 +1825,116 @@ const server = http.createServer(async (req, res) => {
         error: "Failed to load buoy observations",
         detail: error instanceof Error ? error.message : "Unknown error"
       });
+      return;
+    }
+  }
+
+  if (pathname === "/api/weather/radar/frame") {
+    try {
+      const radar = await loadStormRadarFrame();
+      if (!radar.frame) {
+        json(res, 200, {
+          available: false,
+          source: "RainViewer",
+          message: "No radar frame available"
+        });
+        return;
+      }
+
+      json(res, 200, {
+        available: true,
+        source: "RainViewer",
+        observedAt: radar.frame.time ? new Date(radar.frame.time * 1000).toISOString() : null,
+        tileUrlTemplate: `/api/weather/radar/tiles/{z}/{x}/{y}.png?path=${encodeURIComponent(radar.frame.path)}`
+      });
+      return;
+    } catch (error) {
+      json(res, 502, {
+        available: false,
+        source: "RainViewer",
+        message: "Failed to fetch storm radar frame",
+        detail: error instanceof Error ? error.message : "Unknown error"
+      });
+      return;
+    }
+  }
+
+  const stormRadarTileMatch = pathname.match(/^\/api\/weather\/radar\/tiles\/(\d+)\/(\d+)\/(\d+)\.png$/);
+  if (stormRadarTileMatch) {
+    const z = Number.parseInt(stormRadarTileMatch[1] ?? "0", 10);
+    const x = Number.parseInt(stormRadarTileMatch[2] ?? "0", 10);
+    const y = Number.parseInt(stormRadarTileMatch[3] ?? "0", 10);
+
+    if (!Number.isFinite(z) || !Number.isFinite(x) || !Number.isFinite(y)) {
+      json(res, 400, { error: "Invalid radar tile coordinates" });
+      return;
+    }
+
+    try {
+      const radar = await loadStormRadarFrame();
+      const pathFromQuery = (url.searchParams.get("path") ?? "").trim();
+      const framePath = pathFromQuery || radar.frame?.path;
+      if (!framePath) {
+        res.writeHead(200, { "Content-Type": "image/png", "Cache-Control": "public, max-age=120" });
+        res.end(TRANSPARENT_PNG_BUFFER);
+        return;
+      }
+
+      const host = radar.host;
+      const cacheKey = `${framePath}:${z}:${x}:${y}`;
+      const now = Date.now();
+      const cached = stormRadarTileCache.get(cacheKey);
+      if (cached && cached.expiresAt > now) {
+        res.writeHead(200, {
+          "Content-Type": cached.contentType,
+          "Cache-Control": "public, max-age=180",
+          "X-PalmerLou-Radar-Cache": "HIT"
+        });
+        res.end(cached.body);
+        return;
+      }
+
+      const remoteUrl = buildStormRadarTileUrl(host, framePath, z, x, y);
+      const remoteResponse = await fetch(remoteUrl, {
+        headers: {
+          "User-Agent": "Palmer-Lou-OS/1.0 (+storm-radar-proxy)"
+        },
+        signal: AbortSignal.timeout(12000)
+      });
+
+      if (!remoteResponse.ok) {
+        res.writeHead(200, {
+          "Content-Type": "image/png",
+          "Cache-Control": "public, max-age=120",
+          "X-PalmerLou-Radar-Cache": "MISS_EMPTY"
+        });
+        res.end(TRANSPARENT_PNG_BUFFER);
+        return;
+      }
+
+      const contentType = remoteResponse.headers.get("content-type") ?? "image/png";
+      const body = Buffer.from(await remoteResponse.arrayBuffer());
+      stormRadarTileCache.set(cacheKey, {
+        expiresAt: now + STORM_RADAR_TILE_CACHE_TTL_MS,
+        contentType,
+        body
+      });
+      pruneStormRadarTileCache();
+
+      res.writeHead(200, {
+        "Content-Type": contentType,
+        "Cache-Control": "public, max-age=180",
+        "X-PalmerLou-Radar-Cache": "MISS"
+      });
+      res.end(body);
+      return;
+    } catch {
+      res.writeHead(200, {
+        "Content-Type": "image/png",
+        "Cache-Control": "public, max-age=120",
+        "X-PalmerLou-Radar-Cache": "UNAVAILABLE"
+      });
+      res.end(TRANSPARENT_PNG_BUFFER);
       return;
     }
   }

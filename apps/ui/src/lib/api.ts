@@ -456,6 +456,26 @@ export async function loadOceanBuoys(bounds: {
   }>;
 }
 
+export async function loadStormRadarFrame() {
+  const response = await fetch("/api/weather/radar/frame", {
+    headers: {
+      Accept: "application/json"
+    }
+  });
+
+  if (!response.ok) {
+    throw new Error(`Failed to load storm radar frame: ${response.status}`);
+  }
+
+  return response.json() as Promise<{
+    available: boolean;
+    source: string;
+    observedAt?: string | null;
+    tileUrlTemplate?: string;
+    message?: string;
+  }>;
+}
+
 export async function requestFishingAdvisor(payload: {
   species: string;
   catches: Array<{
