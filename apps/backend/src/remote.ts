@@ -132,14 +132,31 @@ function resolveRemoteControlCommand(action: RemoteControlAction, repeat: number
     ? shellQuote(xauthority)
     : "$(ls -1 /run/user/*/.mutter-Xwaylandauth.* 2>/dev/null | head -n 1)";
 
-  // For navigation/selection keys, activate the launched app window first so
-  // keystrokes reach Netflix/YouTube rather than the Palmer Lou browser.
+  // For navigation/selection keys, find the app window by class and send directly with --window.
+  // Using export so DISPLAY/XAUTHORITY persist to xdotool later in the same script.
   const needsAppFocus = ["up", "down", "left", "right", "select", "back", "backspace"].includes(action);
-  const focusPreamble = needsAppFocus
-    ? `FOCUS_PID=$(pgrep -f 'palmer-lou-apps' 2>/dev/null | head -1); [ -z "$FOCUS_PID" ] && FOCUS_PID=$(pgrep -f 'com.spotify.Client' 2>/dev/null | head -1); if [ -n "$FOCUS_PID" ]; then FOCUS_WIN=$(xdotool search --pid "$FOCUS_PID" 2>/dev/null | head -1); [ -n "$FOCUS_WIN" ] && xdotool windowactivate --sync "$FOCUS_WIN" 2>/dev/null || true; fi; `
-    : "";
 
-  const core = `XAUTH=${xauthExpr}; DISPLAY=${shellQuote(display)} XAUTHORITY=\"$XAUTH\" ${focusPreamble}xdotool key --clearmodifiers --repeat ${repeatCount} ${shellQuote(key)}`;
+  const scriptLines = [
+    `XAUTH=${xauthExpr}`,
+    `export DISPLAY=${shellQuote(display)}`,
+    `export XAUTHORITY="$XAUTH"`,
+    ...(needsAppFocus ? [
+      `TARGET=""`,
+      `for wid in $(xdotool search --class chromium 2>/dev/null); do`,
+      `  nm=$(xdotool getwindowname "$wid" 2>/dev/null); case "$nm" in *[Pp]almer*|'') continue;; esac`,
+      `  TARGET="$wid"; break`,
+      `done`,
+      `[ -z "$TARGET" ] && TARGET=$(xdotool search --class spotify 2>/dev/null | head -1)`,
+      `if [ -n "$TARGET" ]; then`,
+      `  xdotool key --clearmodifiers --window "$TARGET" --repeat ${repeatCount} ${shellQuote(key)}`,
+      `else`,
+      `  xdotool key --clearmodifiers --repeat ${repeatCount} ${shellQuote(key)}`,
+      `fi`,
+    ] : [
+      `xdotool key --clearmodifiers --repeat ${repeatCount} ${shellQuote(key)}`,
+    ])
+  ];
+  const core = scriptLines.join('\n');
 
   if (!runAsUser) {
     return core;
@@ -269,8 +286,23 @@ export async function runRemoteTypeAction(text: string): Promise<{ success: bool
   const display = (process.env.PALMER_LOU_REMOTE_CONTROL_DISPLAY ?? ":0").trim();
   const runAsUser = (process.env.PALMER_LOU_REMOTE_CONTROL_USER ?? "palmerlou").trim();
   const xauthExpr = "$(ls -1 /run/user/*/.mutter-Xwaylandauth.* 2>/dev/null | head -n 1)";
-  const focusPreamble = `FOCUS_PID=$(pgrep -f 'palmer-lou-apps' 2>/dev/null | head -1); [ -z "$FOCUS_PID" ] && FOCUS_PID=$(pgrep -f 'com.spotify.Client' 2>/dev/null | head -1); if [ -n "$FOCUS_PID" ]; then FOCUS_WIN=$(xdotool search --pid "$FOCUS_PID" 2>/dev/null | head -1); [ -n "$FOCUS_WIN" ] && xdotool windowactivate --sync "$FOCUS_WIN" 2>/dev/null || true; fi; `;
-  const core = `XAUTH=${xauthExpr}; DISPLAY=${shellQuote(display)} XAUTHORITY=\"$XAUTH\" ${focusPreamble}xdotool type --clearmodifiers --delay 12 ${shellQuote(safe)}`;
+
+  const core = [
+    `XAUTH=${xauthExpr}`,
+    `export DISPLAY=${shellQuote(display)}`,
+    `export XAUTHORITY="$XAUTH"`,
+    `TARGET=""`,
+    `for wid in $(xdotool search --class chromium 2>/dev/null); do`,
+    `  nm=$(xdotool getwindowname "$wid" 2>/dev/null); case "$nm" in *[Pp]almer*|'') continue;; esac`,
+    `  TARGET="$wid"; break`,
+    `done`,
+    `[ -z "$TARGET" ] && TARGET=$(xdotool search --class spotify 2>/dev/null | head -1)`,
+    `if [ -n "$TARGET" ]; then`,
+    `  xdotool type --clearmodifiers --delay 12 --window "$TARGET" ${shellQuote(safe)}`,
+    `else`,
+    `  xdotool type --clearmodifiers --delay 12 ${shellQuote(safe)}`,
+    `fi`,
+  ].join('\n');
   const cmd = runAsUser ? `sudo -u ${shellQuote(runAsUser)} bash -lc ${shellQuote(core)}` : core;
 
   try {
