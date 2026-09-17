@@ -1,0 +1,29 @@
+[Unit]
+Description=Palmer Lou Backend
+After=network-online.target local-fs.target
+Wants=network-online.target
+# Restart this unit if the system recovers from an unclean power loss
+RequiresMountsFor=/opt/palmer-lou
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/palmer-lou
+EnvironmentFile=-/etc/palmer-lou/backend.env
+Environment=PORT=8787
+Environment=NODE_ENV=production
+# Use node directly so the process is the PID-1 of the unit (no npm wrapper)
+ExecStart=/usr/bin/node /opt/palmer-lou/apps/backend/dist/server.js
+Restart=always
+RestartSec=3
+# Allow unlimited restarts — the boat power cycle will hammer this repeatedly
+StartLimitIntervalSec=0
+# Give the process 3 s to flush and exit on SIGTERM before SIGKILL
+TimeoutStopSec=3
+KillMode=mixed
+# Log to the systemd journal so we have crash context even after dirty shutdowns
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=palmer-lou
+
+[Install]
+WantedBy=multi-user.target

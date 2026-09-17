@@ -1,0 +1,8 @@
+{
+    "chat.tools.terminal.autoApprove": {
+        "/^node -e \"const s=require\\('simple-icons'\\); console\\.log\\(Object\\.keys\\(s\\)\\.filter\\(n => /radio\\|broadcast\\|signal\\|tuner\\|music\\|xm\\|sirius/i\\.test\\(n\\)\\)\\.slice\\(0,80\\)\\.join\\('\\\\n'\\)\\)\"$/": {
+            "approve": true,
+            "matchCommandLine": true
+        }
+    }
+}

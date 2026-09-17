@@ -1,0 +1,31 @@
+#palmer-lou-home-btn {
+  position: fixed !important;
+  top: 14px !important;
+  right: 14px !important;
+  left: auto !important;
+  z-index: 2147483647 !important;
+  width: 44px !important;
+  height: 44px !important;
+  border-radius: 50% !important;
+  background: rgba(0, 0, 0, 0.48) !important;
+  border: 2px solid rgba(255, 255, 255, 0.55) !important;
+  color: rgba(255, 255, 255, 0.9) !important;
+  font-size: 20px !important;
+  line-height: 40px !important;
+  text-align: center !important;
+  cursor: pointer !important;
+  user-select: none !important;
+  -webkit-user-select: none !important;
+  touch-action: manipulation !important;
+  pointer-events: auto !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  backdrop-filter: blur(6px) !important;
+  -webkit-backdrop-filter: blur(6px) !important;
+}
+
+#palmer-lou-home-btn:active {
+  background: rgba(0, 0, 0, 0.75) !important;
+  transform: scale(0.92) !important;
+}

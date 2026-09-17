@@ -1,0 +1,21 @@
+{
+  "name": "palmer-lou-os",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": [
+    "apps/*"
+  ],
+  "scripts": {
+    "dev": "concurrently -k -n backend,ui -c cyan,magenta \"npm run dev -w apps/backend\" \"npm run dev -w apps/ui\"",
+    "build": "npm run build -w apps/ui && npm run build -w apps/backend",
+    "start": "npm run start -w apps/backend",
+    "check": "npm run check -w apps/ui && npm run check -w apps/backend"
+  },
+  "devDependencies": {
+    "@types/leaflet": "^1.9.22",
+    "@types/node": "^22.13.14",
+    "concurrently": "^9.1.2",
+    "tsx": "^4.20.3",
+    "typescript": "^5.8.2"
+  }
+}

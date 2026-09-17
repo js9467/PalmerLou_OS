@@ -1,0 +1,15 @@
+{
+  "name": "Palmer Lou OS",
+  "short_name": "Palmer Lou",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#02080c",
+  "theme_color": "#02080c",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "512x512",
+      "type": "image/svg+xml"
+    }
+  ]
+}
