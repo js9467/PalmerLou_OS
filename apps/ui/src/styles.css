@@ -3672,6 +3672,16 @@ body {
   min-height: 60px;
 }
 
+.home-header__logo {
+  height: 42px;
+  width: auto;
+  flex-shrink: 0;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.94);
+  padding: 3px 8px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+}
+
 .home-header::before {
   opacity: 0.22;
 }
@@ -3844,6 +3854,14 @@ body {
 .garmin-content--viewport > .panel {
   height: 100%;
   overflow: hidden;
+}
+
+/* Allow long-content panels to scroll on the kiosk without clipping */
+.garmin-content--viewport > .drill-panel:not(.drill-panel--streaming):not(.drill-panel--fishing-map),
+.garmin-content--viewport > .home-panel {
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
 }
 
 .panel {

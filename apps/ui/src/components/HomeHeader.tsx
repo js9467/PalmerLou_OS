@@ -15,6 +15,7 @@ export function HomeHeader({ online, nowLabel, remoteMode, qrImageSrc, onKillApp
 
   return (
     <header className="home-header">
+      <img className="home-header__logo" src="/brand/logo.png" alt="Palmer Lou" />
       <div className="home-header__status">
         <span className={`home-header__dot ${online ? "home-header__dot--online" : "home-header__dot--offline"}`} aria-label={online ? "NMEA online" : "NMEA offline"} />
         <span className="home-header__time">{nowLabel}</span>
