@@ -9,5 +9,8 @@
     "build": "tsc -p tsconfig.json",
     "start": "node dist/server.js",
     "check": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "qrcode": "^1.5.4"
   }
 }

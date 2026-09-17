@@ -6,7 +6,7 @@ const execAsync = promisify(exec);
 
 type RemoteAccessMode = "disabled" | "tailscale" | "cloudflared" | "custom";
 type TunnelAction = "start" | "stop" | "restart" | "status";
-export type RemoteControlAction = "up" | "down" | "left" | "right" | "select" | "back" | "home" | "playpause" | "volup" | "voldown" | "mute";
+export type RemoteControlAction = "up" | "down" | "left" | "right" | "select" | "back" | "home" | "playpause" | "volup" | "voldown" | "mute" | "backspace";
 
 type ResolvedTunnelCommands = {
   status: string;
@@ -74,7 +74,8 @@ const linuxKeyMap: Record<RemoteControlAction, string> = {
   playpause: "XF86AudioPlay",
   volup: "XF86AudioRaiseVolume",
   voldown: "XF86AudioLowerVolume",
-  mute: "XF86AudioMute"
+  mute: "XF86AudioMute",
+  backspace: "BackSpace"
 };
 
 function parseRemoteControlCommandMap(raw: string) {
@@ -130,7 +131,15 @@ function resolveRemoteControlCommand(action: RemoteControlAction, repeat: number
   const xauthExpr = xauthority
     ? shellQuote(xauthority)
     : "$(ls -1 /run/user/*/.mutter-Xwaylandauth.* 2>/dev/null | head -n 1)";
-  const core = `XAUTH=${xauthExpr}; DISPLAY=${shellQuote(display)} XAUTHORITY=\"$XAUTH\" xdotool key --clearmodifiers --repeat ${repeatCount} ${shellQuote(key)}`;
+
+  // For navigation/selection keys, activate the launched app window first so
+  // keystrokes reach Netflix/YouTube rather than the Palmer Lou browser.
+  const needsAppFocus = ["up", "down", "left", "right", "select", "back", "backspace"].includes(action);
+  const focusPreamble = needsAppFocus
+    ? `FOCUS_PID=$(pgrep -f 'palmer-lou-apps' 2>/dev/null | head -1); [ -z "$FOCUS_PID" ] && FOCUS_PID=$(pgrep -f 'com.spotify.Client' 2>/dev/null | head -1); if [ -n "$FOCUS_PID" ]; then FOCUS_WIN=$(xdotool search --pid "$FOCUS_PID" 2>/dev/null | head -1); [ -n "$FOCUS_WIN" ] && xdotool windowactivate --sync "$FOCUS_WIN" 2>/dev/null || true; fi; `
+    : "";
+
+  const core = `XAUTH=${xauthExpr}; DISPLAY=${shellQuote(display)} XAUTHORITY=\"$XAUTH\" ${focusPreamble}xdotool key --clearmodifiers --repeat ${repeatCount} ${shellQuote(key)}`;
 
   if (!runAsUser) {
     return core;
@@ -244,6 +253,32 @@ function tunnelNotesForMode(mode: RemoteAccessMode) {
   }
 
   return "Custom remote tunnel mode uses environment-provided commands.";
+}
+
+export async function runRemoteTypeAction(text: string): Promise<{ success: boolean; text: string; executedAt: string }> {
+  if (process.platform !== "linux") {
+    return { success: false, text, executedAt: new Date().toISOString() };
+  }
+
+  // Allow only printable ASCII to prevent shell injection.
+  const safe = text.replace(/[^\x20-\x7E]/g, "");
+  if (!safe) {
+    return { success: false, text, executedAt: new Date().toISOString() };
+  }
+
+  const display = (process.env.PALMER_LOU_REMOTE_CONTROL_DISPLAY ?? ":0").trim();
+  const runAsUser = (process.env.PALMER_LOU_REMOTE_CONTROL_USER ?? "palmerlou").trim();
+  const xauthExpr = "$(ls -1 /run/user/*/.mutter-Xwaylandauth.* 2>/dev/null | head -n 1)";
+  const focusPreamble = `FOCUS_PID=$(pgrep -f 'palmer-lou-apps' 2>/dev/null | head -1); [ -z "$FOCUS_PID" ] && FOCUS_PID=$(pgrep -f 'com.spotify.Client' 2>/dev/null | head -1); if [ -n "$FOCUS_PID" ]; then FOCUS_WIN=$(xdotool search --pid "$FOCUS_PID" 2>/dev/null | head -1); [ -n "$FOCUS_WIN" ] && xdotool windowactivate --sync "$FOCUS_WIN" 2>/dev/null || true; fi; `;
+  const core = `XAUTH=${xauthExpr}; DISPLAY=${shellQuote(display)} XAUTHORITY=\"$XAUTH\" ${focusPreamble}xdotool type --clearmodifiers --delay 12 ${shellQuote(safe)}`;
+  const cmd = runAsUser ? `sudo -u ${shellQuote(runAsUser)} bash -lc ${shellQuote(core)}` : core;
+
+  try {
+    await execAsync(cmd, { timeout: 5000 });
+    return { success: true, text: safe, executedAt: new Date().toISOString() };
+  } catch {
+    return { success: false, text: safe, executedAt: new Date().toISOString() };
+  }
 }
 
 export async function getRemoteAccessStatus(): Promise<RemoteAccessStatus> {

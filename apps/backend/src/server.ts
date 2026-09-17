@@ -7,7 +7,7 @@ import { applyBluetoothAction, getBluetoothState, runBluetoothDiagnostics, scanB
 import { dashboardSummary } from "./mock-data.js";
 import { getNmeaTelemetry } from "./nmea.js";
 import { getLauncherState, killLaunchedApp, launchApp, returnToHome } from "./launcher.js";
-import { getRemoteAccessStatus, getRemoteUpdateStatus, runRemoteControlAction, runRemoteUpdate, runTunnelAction, type RemoteAccessStatus, type RemoteControlAction } from "./remote.js";
+import { getRemoteAccessStatus, getRemoteUpdateStatus, runRemoteControlAction, runRemoteTypeAction, runRemoteUpdate, runTunnelAction, type RemoteAccessStatus, type RemoteControlAction } from "./remote.js";
 import { resolveUpdateStatus } from "./update.js";
 import { disconnectWifiNetwork, joinWifiNetwork, scanWifiNetworks } from "./wifi.js";
 
@@ -1435,7 +1435,7 @@ const server = http.createServer(async (req, res) => {
       const repeatRaw = Number(payload?.repeat ?? 1);
       const repeat = Number.isFinite(repeatRaw) ? Math.max(1, Math.min(8, Math.floor(repeatRaw))) : 1;
 
-      const validActions: RemoteControlAction[] = ["up", "down", "left", "right", "select", "back", "home", "playpause", "volup", "voldown", "mute"];
+      const validActions: RemoteControlAction[] = ["up", "down", "left", "right", "select", "back", "home", "playpause", "volup", "voldown", "mute", "backspace"];
       if (typeof action !== "string" || !validActions.includes(action as RemoteControlAction)) {
         json(res, 400, { error: "Invalid remote control action" });
         return;
@@ -1446,6 +1446,25 @@ const server = http.createServer(async (req, res) => {
     } catch (error) {
       json(res, 500, {
         error: "Failed to run remote control action",
+        detail: error instanceof Error ? error.message : "Unknown error"
+      });
+      return;
+    }
+  }
+
+  if (pathname === "/api/remote/type" && req.method === "POST") {
+    try {
+      const payload = await readRequestJson(req);
+      const text = typeof payload?.text === "string" ? payload.text : "";
+      if (!text) {
+        json(res, 400, { error: "Missing text" });
+        return;
+      }
+      json(res, 200, await runRemoteTypeAction(text));
+      return;
+    } catch (error) {
+      json(res, 500, {
+        error: "Failed to type text",
         detail: error instanceof Error ? error.message : "Unknown error"
       });
       return;
@@ -1724,6 +1743,11 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  if (pathname === "/api/remote/app-url") {
+    json(res, 200, { url: (process.env.PALMER_LOU_REMOTE_APP_URL ?? "").trim() });
+    return;
+  }
+
   if (pathname === "/brand/logo.png") {
     if (existsSync(brandArtwork)) {
       sendFile(brandArtwork, res);
@@ -1733,6 +1757,21 @@ const server = http.createServer(async (req, res) => {
     res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
     res.end("Brand artwork not found");
     return;
+  }
+
+  if (pathname === "/brand/remote-qr.svg") {
+    const remoteAppUrl = (process.env.PALMER_LOU_REMOTE_APP_URL ?? "").trim();
+    if (remoteAppUrl) {
+      try {
+        const { default: QRCode } = await import("qrcode");
+        const svg = await (QRCode as any).toString(remoteAppUrl, { type: "svg", margin: 2 });
+        res.writeHead(200, { "Content-Type": "image/svg+xml", "Cache-Control": "public, max-age=3600" });
+        res.end(svg);
+        return;
+      } catch {
+        // fall through to static file
+      }
+    }
   }
 
   if (pathname === "/favicon.ico") {

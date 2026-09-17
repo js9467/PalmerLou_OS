@@ -409,6 +409,20 @@ export async function sendRemoteControlAction(action: "up" | "down" | "left" | "
   }>;
 }
 
+export async function sendRemoteTypeRequest(text: string) {
+  const response = await fetch("/api/remote/type", {
+    method: "POST",
+    headers: { Accept: "application/json", "Content-Type": "application/json" },
+    body: JSON.stringify({ text })
+  });
+
+  if (!response.ok) {
+    throw new Error(`Failed remote type: ${response.status}`);
+  }
+
+  return response.json() as Promise<{ success: boolean; text: string; executedAt: string }>;
+}
+
 export async function loadOceanBuoys(bounds: {
   minLat: number;
   maxLat: number;

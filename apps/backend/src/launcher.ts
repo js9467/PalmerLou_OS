@@ -231,7 +231,6 @@ function buildSafeChromiumAppFlags(request: LaunchRequest) {
   const isVideoApp = ["youtube", "youtube-tv", "netflix", "paramount", "peacock", "disney"].includes(request.appId);
 
   return [
-    ...(isVideoApp ? ["--kiosk"] : [`--app=${request.launchUrl}`]),
     "--start-fullscreen",
     request.launchUrl,
     "--no-first-run",
@@ -466,6 +465,36 @@ async function runCommand(resolved: ResolvedLaunchCommand | null) {
 }
 
 export async function launchApp(request: LaunchRequest) {
+  // If the same app is already active, restore its minimized window instead of relaunching.
+  if (
+    process.platform === "linux" &&
+    launcherState.appId === request.appId &&
+    launcherState.status === "Launched" &&
+    activeLaunchProcess
+  ) {
+    const appId = request.appId;
+    const display = (process.env.PALMER_LOU_LAUNCH_DISPLAY ?? ":0").trim() || ":0";
+    const runAsUser = (process.env.PALMER_LOU_LAUNCH_USER ?? "palmerlou").trim();
+    const restoreScript = [
+      `XAUTH=$(ls -1 /run/user/*/.mutter-Xwaylandauth.* 2>/dev/null | head -n 1)`,
+      `export DISPLAY=${shellQuote(display)}`,
+      `export XAUTHORITY="$XAUTH"`,
+      `WIN=$(xdotool search --class chromium 2>/dev/null | while IFS= read -r wid; do`,
+      `  nm=$(xdotool getwindowname "$wid" 2>/dev/null); case "$nm" in *[Pp]almer*) continue;; esac`,
+      `  echo "$wid"; break`,
+      `done)`,
+      `[ -z "$WIN" ] && WIN=$(xdotool search --class Spotify 2>/dev/null | head -1)`,
+      `if [ -n "$WIN" ]; then`,
+      `  xdotool windowmap "$WIN" 2>/dev/null || true`,
+      `  xdotool windowactivate --sync "$WIN" 2>/dev/null || true`,
+      `fi`
+    ].join('\n');
+    const proc = spawn("sudo", ["-u", runAsUser, "bash", "-lc", restoreScript], { stdio: "ignore", detached: true });
+    proc.unref();
+    setTimeout(() => { try { proc.kill(); } catch { /* already exited */ } }, 5000);
+    return launcherState;
+  }
+
   stopActiveLaunchProcess();
   stopKnownLaunchedAppProcesses();
   const requestedFromRemote = request.requestSource === "remote";

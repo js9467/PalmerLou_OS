@@ -36,6 +36,7 @@ import {
   sendKillLaunchedAppRequest,
   sendLaunchRequest,
   sendRemoteControlAction,
+  sendRemoteTypeRequest,
   sendRemoteTunnelAction,
   sendReturnHomeRequest,
   disconnectWifiNetwork,
@@ -71,7 +72,7 @@ const HOME_TILE_IDS = ["speed", "heading", "depth", "water-temp", "clock", "conn
 type HomeTileId = typeof HOME_TILE_IDS[number];
 type BaitType = Exclude<(typeof BAIT_TYPE_FILTERS)[number], "All types">;
 type BaitColor = Exclude<(typeof BAIT_COLOR_FILTERS)[number], "All colors">;
-type RemoteControlAction = "up" | "down" | "left" | "right" | "select" | "back" | "home" | "playpause" | "volup" | "voldown" | "mute";
+type RemoteControlAction = "up" | "down" | "left" | "right" | "select" | "back" | "home" | "playpause" | "volup" | "voldown" | "mute" | "backspace";
 
 type BaitPreset = {
   id: string;
@@ -1252,6 +1253,8 @@ export function App() {
   const [remoteOpsError, setRemoteOpsError] = useState<string | null>(null);
   const [runningRemoteControlAction, setRunningRemoteControlAction] = useState<RemoteControlAction | null>(null);
   const [remoteControlStatus, setRemoteControlStatus] = useState("Remote controls ready");
+  const [showKeyboard, setShowKeyboard] = useState(false);
+  const [keyboardShift, setKeyboardShift] = useState(false);
   const [trendBaseTime] = useState(() => Date.now());
   const [depthTempTrend, setDepthTempTrend] = useState<Array<{ timestamp: string; depthFeet: number | null; waterTempF: number | null }>>([]);
   const [homeTileLayout, setHomeTileLayout] = useState<HomeTileId[]>(() => readHomeTileLayout());
@@ -3083,10 +3086,25 @@ export function App() {
     }
   }
 
+  async function handleRemoteType(text: string) {
+    try {
+      await sendRemoteTypeRequest(text);
+      vibrateRemote([8]);
+    } catch {
+      vibrateRemote([36, 36]);
+    }
+  }
+
   function renderRemoteControlPad() {
     if (!remoteMode) {
       return null;
     }
+
+    const KB_ROWS = [
+      ["q","w","e","r","t","y","u","i","o","p"],
+      ["a","s","d","f","g","h","j","k","l"],
+      ["z","x","c","v","b","n","m"]
+    ];
 
     return (
       <section className="panel remote-control-panel" aria-label="Touchscreen remote controls">
@@ -3097,22 +3115,55 @@ export function App() {
 
         <div className="remote-control-grid" role="group" aria-label="Directional and media controls">
           <button type="button" className="theme-toggle remote-btn remote-btn--ghost" onClick={() => void handleRemoteControl("home")}>Home</button>
-          <button type="button" className="theme-toggle remote-btn" onClick={() => void handleRemoteControl("up")}>Up</button>
+          <button type="button" className="theme-toggle remote-btn" onClick={() => void handleRemoteControl("up")}>▲</button>
           <button type="button" className="theme-toggle remote-btn remote-btn--ghost" onClick={() => void handleRemoteControl("mute")}>Mute</button>
 
-          <button type="button" className="theme-toggle remote-btn" onClick={() => void handleRemoteControl("left")}>Left</button>
+          <button type="button" className="theme-toggle remote-btn" onClick={() => void handleRemoteControl("left")}>◀</button>
           <button type="button" className="theme-toggle theme-toggle--primary remote-btn remote-btn--ok" onClick={() => void handleRemoteControl("select")}>OK</button>
-          <button type="button" className="theme-toggle remote-btn" onClick={() => void handleRemoteControl("right")}>Right</button>
+          <button type="button" className="theme-toggle remote-btn" onClick={() => void handleRemoteControl("right")}>▶</button>
 
           <button type="button" className="theme-toggle remote-btn remote-btn--ghost" onClick={() => void handleRemoteControl("back")}>Back</button>
-          <button type="button" className="theme-toggle remote-btn" onClick={() => void handleRemoteControl("down")}>Down</button>
-          <button type="button" className="theme-toggle remote-btn remote-btn--ghost" onClick={() => void handleRemoteControl("playpause")}>Play/Pause</button>
+          <button type="button" className="theme-toggle remote-btn" onClick={() => void handleRemoteControl("down")}>▼</button>
+          <button type="button" className="theme-toggle remote-btn remote-btn--ghost" onClick={() => void handleRemoteControl("playpause")}>⏯</button>
         </div>
 
         <div className="remote-control-row" role="group" aria-label="Volume controls">
-          <button type="button" className="theme-toggle remote-btn" onClick={() => void handleRemoteControl("voldown", 2)} disabled={runningRemoteControlAction !== null}>Vol -</button>
+          <button type="button" className="theme-toggle remote-btn" onClick={() => void handleRemoteControl("voldown", 2)} disabled={runningRemoteControlAction !== null}>Vol −</button>
           <button type="button" className="theme-toggle remote-btn" onClick={() => void handleRemoteControl("volup", 2)} disabled={runningRemoteControlAction !== null}>Vol +</button>
         </div>
+
+        <div className="keyboard-toggle-row remote-control-row">
+          <button type="button" className={`theme-toggle remote-btn ${showKeyboard ? "theme-toggle--primary" : ""}`}
+            onClick={() => setShowKeyboard((v) => !v)}>
+            {showKeyboard ? "Hide keyboard" : "⌨ Keyboard"}
+          </button>
+          {showKeyboard ? (
+            <button type="button" className={`theme-toggle remote-btn ${keyboardShift ? "keyboard-key--shift-on" : ""}`}
+              onClick={() => setKeyboardShift((v) => !v)}>
+              ⇧ Shift
+            </button>
+          ) : null}
+        </div>
+
+        {showKeyboard ? (
+          <div className="keyboard-panel">
+            {KB_ROWS.map((row, ri) => (
+              <div key={ri} className="keyboard-row">
+                {row.map((k) => (
+                  <button key={k} type="button" className="keyboard-key"
+                    onClick={() => { void handleRemoteType(keyboardShift ? k.toUpperCase() : k); setKeyboardShift(false); }}>
+                    {keyboardShift ? k.toUpperCase() : k}
+                  </button>
+                ))}
+              </div>
+            ))}
+            <div className="keyboard-row">
+              <button type="button" className="keyboard-key keyboard-key--wide" onClick={() => void handleRemoteControl("backspace")}>⌫</button>
+              <button type="button" className="keyboard-key keyboard-key--wide" style={{ flex: 4, maxWidth: 200 }} onClick={() => void handleRemoteType(" ")}>space</button>
+              <button type="button" className="keyboard-key keyboard-key--wide" onClick={() => void handleRemoteControl("select")}>↵</button>
+            </div>
+          </div>
+        ) : null}
       </section>
     );
   }
@@ -4792,6 +4843,57 @@ export function App() {
   const killTargetLogoPath = isNativeRuntime && launcherState.status === "Launched"
     ? [...streamingTargets, ...musicTargets].find((target) => target.id === launcherState.appId)?.logoPath
     : undefined;
+
+  // Clean remote-only layout — no dashboard tiles, just controls + app launch
+  if (remoteMode) {
+    return (
+      <div className="shell shell--remote">
+        <BootSplash visible={!summary && online} />
+        <div className="remote-only-shell">
+          <header className="remote-only-header">
+            <img className="home-header__logo" src="/brand/logo.png" alt="Palmer Lou" />
+            <div className="remote-only-header__status">
+              <span className={`home-header__dot ${nmeaOnline ? "home-header__dot--online" : "home-header__dot--offline"}`} />
+              <span className="home-header__time">{nowLabel}</span>
+            </div>
+            {killTargetName ? (
+              <button className="kill-app-button kill-app-button--inline" type="button"
+                onClick={() => void handleKillLaunchedApp()} disabled={killingLaunchedApp}>
+                <span className="kill-app-button__name">{killingLaunchedApp ? "Closing…" : `✕ ${killTargetName}`}</span>
+              </button>
+            ) : null}
+          </header>
+
+          <div className="remote-only-body">
+            <section className="remote-apps-section">
+              <p className="remote-section-label">Video</p>
+              <div className="remote-app-row">
+                {streamingTargets.map((target) => (
+                  <button key={target.id} type="button"
+                    className={`remote-app-btn${launcherState.appId === target.id ? " remote-app-btn--active" : ""}`}
+                    onClick={() => void launchAppTarget(target, "streaming")} disabled={launching}>
+                    <BrandGlyph logoPath={target.logoPath} className="remote-app-btn__icon" />
+                  </button>
+                ))}
+              </div>
+              <p className="remote-section-label">Music</p>
+              <div className="remote-app-row">
+                {musicTargets.map((target) => (
+                  <button key={target.id} type="button"
+                    className={`remote-app-btn${launcherState.appId === target.id ? " remote-app-btn--active" : ""}`}
+                    onClick={() => void launchAppTarget(target, "music")} disabled={launching}>
+                    <BrandGlyph logoPath={target.logoPath} className="remote-app-btn__icon" />
+                  </button>
+                ))}
+              </div>
+            </section>
+
+            {renderRemoteControlPad()}
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className={remoteMode ? "shell shell--remote" : "shell"}>
