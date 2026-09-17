@@ -3673,18 +3673,16 @@ body {
 }
 
 .home-header__logo {
-  height: 42px;
+  height: 56px;
   width: auto;
   flex-shrink: 0;
-  border-radius: 5px;
-  /* replaced by .home-header__wordmark */
-  display: none;
+  border-radius: 4px;
+  /* invert white bg to near-black on the dark header; hue-rotate restores brand teal/gold */
+  filter: invert(1) hue-rotate(180deg);
 }
 
 .home-header__wordmark {
-  flex-shrink: 0;
-  display: flex;
-  align-items: center;
+  display: none;
 }
 
 .home-header__wordmark-text {
@@ -4941,6 +4939,148 @@ body {
 
 .garmin-tabbar--remote .garmin-tabbar__label {
   font-size: 0.72rem;
+}
+
+/* ===== REMOTE-ONLY LAYOUT ===== */
+.remote-only-shell {
+  display: flex;
+  flex-direction: column;
+  min-height: 100svh;
+  max-width: 480px;
+  margin: 0 auto;
+  padding: 12px;
+  gap: 10px;
+}
+
+.remote-only-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border-radius: 14px;
+  background: linear-gradient(180deg, #161d28, #101720);
+  border: 1px solid rgba(255,255,255,0.08);
+  flex-shrink: 0;
+}
+
+.remote-only-header__status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+}
+
+.remote-only-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+}
+
+.remote-apps-section {
+  padding: 10px;
+  border-radius: 12px;
+  background: rgba(255,255,255,0.03);
+  border: 1px solid rgba(255,255,255,0.07);
+  flex-shrink: 0;
+}
+
+.remote-section-label {
+  margin: 0 0 6px;
+  font-size: 0.65rem;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--text-soft);
+}
+
+.remote-app-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.remote-app-btn {
+  width: 52px;
+  height: 52px;
+  border-radius: 12px;
+  border: 1px solid rgba(255,255,255,0.1);
+  background: rgba(255,255,255,0.05);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  padding: 0;
+  transition: background 120ms;
+  flex-shrink: 0;
+  overflow: hidden;
+}
+
+.remote-app-btn:active {
+  background: rgba(255,255,255,0.14);
+}
+
+.remote-app-btn--active {
+  border-color: rgba(0,192,192,0.65);
+  background: rgba(0,192,192,0.14);
+  box-shadow: 0 0 0 1px rgba(0,192,192,0.3);
+}
+
+.remote-app-btn__icon {
+  display: block;
+  width: 36px;
+  height: 36px;
+  object-fit: contain;
+  flex-shrink: 0;
+}
+
+/* ===== NIGHT VISION FULLSCREEN ===== */
+.camera-fullscreen {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  background: #000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.camera-fullscreen__img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.camera-fullscreen__exit {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  z-index: 10000;
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.72);
+  border: 1px solid rgba(255, 255, 255, 0.4);
+  color: #fff;
+  font-size: 1.2rem;
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+}
+
+.camera-fullscreen-btn {
+  padding: 6px 10px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  color: var(--text);
+  font-size: 1.1rem;
+  cursor: pointer;
+  line-height: 1;
+}
+
+.camera-fullscreen-btn:active {
+  background: rgba(255, 255, 255, 0.16);
 }
 
 .remote-launch-status {
