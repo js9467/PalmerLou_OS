@@ -3677,8 +3677,25 @@ body {
   width: auto;
   flex-shrink: 0;
   border-radius: 5px;
-  /* invert white background to near-black so it disappears on the dark header */
-  filter: invert(1) hue-rotate(180deg) drop-shadow(0 1px 6px rgba(0, 192, 192, 0.25));
+  /* replaced by .home-header__wordmark */
+  display: none;
+}
+
+.home-header__wordmark {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+}
+
+.home-header__wordmark-text {
+  font-size: 1.05rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  white-space: nowrap;
+  background: linear-gradient(120deg, var(--aqua) 20%, var(--sand) 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
 }
 
 .home-header::before {
@@ -3858,9 +3875,38 @@ body {
 /* Allow long-content panels to scroll on the kiosk without clipping */
 .garmin-content--viewport > .drill-panel:not(.drill-panel--streaming):not(.drill-panel--fishing-map),
 .garmin-content--viewport > .home-panel {
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Heading ribbon and panel header never shrink */
+.garmin-content--viewport > .home-panel .home-splash__heading--standalone,
+.garmin-content--viewport > .drill-panel .panel__header {
+  flex-shrink: 0;
+}
+
+/* Tiles panel fills remaining space and clips rather than overflows */
+.garmin-content--viewport > .home-panel .home-splash__tiles-panel {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* Depth/temp section: fixed max so it never pushes tiles off-screen */
+.garmin-content--viewport > .home-panel > section:last-child {
+  flex-shrink: 0;
+  max-height: 28%;
+  overflow: hidden;
+}
+
+/* Drill panel body content fills remaining space and scrolls internally */
+.garmin-content--viewport > .drill-panel > *:not(.panel__header) {
+  flex: 1;
+  min-height: 0;
   overflow-y: auto;
-  -webkit-overflow-scrolling: touch;
   overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
 }
 
 .panel {
