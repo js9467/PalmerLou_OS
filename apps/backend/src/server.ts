@@ -2696,7 +2696,13 @@ const server = http.createServer(async (req, res) => {
   const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "127.0.0.1"}`);
   const { pathname } = url;
 
-  if (pathname === "/signalk" || pathname.startsWith("/signalk/") || pathname.startsWith("/plugins/")) {
+  const isSignalkAdminRoute = pathname === "/admin"
+    || pathname.startsWith("/admin/")
+    || pathname.startsWith("/@signalk/")
+    || pathname.startsWith("/socket.io/")
+    || /^\/signalk-[^/]+\//.test(pathname);
+
+  if (pathname === "/signalk" || pathname.startsWith("/signalk/") || pathname.startsWith("/plugins/") || isSignalkAdminRoute) {
     await proxySignalkRequest(req, res, `${pathname}${url.search}`);
     return;
   }

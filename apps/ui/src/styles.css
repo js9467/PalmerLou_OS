@@ -4305,6 +4305,17 @@ body {
   background: linear-gradient(180deg, rgba(57, 123, 207, 0.95), rgba(34, 84, 156, 0.98));
 }
 
+.dashboard.garmin-viewport:not(.dashboard--remote) .settings-kiosk__pager-btn {
+  min-height: 30px !important;
+  padding: 4px 8px !important;
+  font-size: 0.72rem !important;
+  letter-spacing: 0.05em !important;
+}
+
+.dashboard.garmin-viewport:not(.dashboard--remote) .settings-kiosk__pager {
+  gap: 5px;
+}
+
 .settings-kiosk__body {
   display: grid;
   gap: 10px;
