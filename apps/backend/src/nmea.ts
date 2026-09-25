@@ -7,6 +7,8 @@ type NmeaTelemetry = {
   headingDegrees: number | null;
   depthFeet: number | null;
   waterTempF: number | null;
+  latitude: number | null;
+  longitude: number | null;
   source: string;
   updatedAt: string;
   sampledAtMs: number | null;
@@ -39,6 +41,14 @@ const NMEA0183_BAUDS = (process.env.PALMER_LOU_NMEA0183_BAUDS ?? `${NMEA0183_BAU
 const NMEA0183_READ_SECONDS = Math.max(1, Number.parseInt(process.env.PALMER_LOU_NMEA0183_READ_SECONDS ?? "3", 10));
 
 let cache: CacheRecord | null = null;
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+
+  return value as Record<string, unknown>;
+}
 
 function pickNumber(source: unknown): number | null {
   if (typeof source === "number" && Number.isFinite(source)) {
@@ -159,11 +169,68 @@ function parseFloatSafe(value: string | undefined) {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
+function parseNmeaCoordinate(raw: string | undefined, hemisphere: string | undefined, isLatitude: boolean) {
+  if (!raw || !hemisphere) {
+    return null;
+  }
+
+  const normalizedHemisphere = hemisphere.trim().toUpperCase();
+  const degreesDigits = isLatitude ? 2 : 3;
+  if (raw.length <= degreesDigits) {
+    return null;
+  }
+
+  const degreesPart = raw.slice(0, degreesDigits);
+  const minutesPart = raw.slice(degreesDigits);
+  const degrees = Number.parseFloat(degreesPart);
+  const minutes = Number.parseFloat(minutesPart);
+  if (!Number.isFinite(degrees) || !Number.isFinite(minutes)) {
+    return null;
+  }
+
+  const decimal = degrees + (minutes / 60);
+  if (!Number.isFinite(decimal)) {
+    return null;
+  }
+
+  const signed = (normalizedHemisphere === "S" || normalizedHemisphere === "W") ? -decimal : decimal;
+  return Number.isFinite(signed) ? signed : null;
+}
+
+function pickPosition(source: Record<string, unknown>, paths: string[]) {
+  for (const path of paths) {
+    const candidate = readPath(source, path);
+    if (!candidate || typeof candidate !== "object") {
+      continue;
+    }
+
+    const direct = candidate as { latitude?: unknown; longitude?: unknown; value?: unknown };
+    const directLat = typeof direct.latitude === "number" && Number.isFinite(direct.latitude) ? direct.latitude : null;
+    const directLng = typeof direct.longitude === "number" && Number.isFinite(direct.longitude) ? direct.longitude : null;
+    if (directLat !== null && directLng !== null) {
+      return { latitude: directLat, longitude: directLng };
+    }
+
+    if (direct.value && typeof direct.value === "object") {
+      const wrapped = direct.value as { latitude?: unknown; longitude?: unknown };
+      const wrappedLat = typeof wrapped.latitude === "number" && Number.isFinite(wrapped.latitude) ? wrapped.latitude : null;
+      const wrappedLng = typeof wrapped.longitude === "number" && Number.isFinite(wrapped.longitude) ? wrapped.longitude : null;
+      if (wrappedLat !== null && wrappedLng !== null) {
+        return { latitude: wrappedLat, longitude: wrappedLng };
+      }
+    }
+  }
+
+  return { latitude: null, longitude: null };
+}
+
 function parseNmea0183Telemetry(lines: string[]): NmeaTelemetry | null {
   let speedKnots: number | null = null;
   let headingDegrees: number | null = null;
   let depthFeet: number | null = null;
   let waterTempF: number | null = null;
+  let latitude: number | null = null;
+  let longitude: number | null = null;
 
   lines.forEach((line) => {
     const sentence = normalizeNmeaSentence(line);
@@ -174,8 +241,14 @@ function parseNmea0183Telemetry(lines: string[]): NmeaTelemetry | null {
     const { type, fields } = sentence;
 
     if (type === "RMC") {
+      const rmcLat = parseNmeaCoordinate(fields[3], fields[4], true);
+      const rmcLng = parseNmeaCoordinate(fields[5], fields[6], false);
       const rmcSpeed = parseFloatSafe(fields[7]);
       const rmcHeading = parseFloatSafe(fields[8]);
+      if (rmcLat !== null && rmcLng !== null) {
+        latitude = rmcLat;
+        longitude = rmcLng;
+      }
       if (rmcSpeed !== null) {
         speedKnots = rmcSpeed;
       }
@@ -229,7 +302,7 @@ function parseNmea0183Telemetry(lines: string[]): NmeaTelemetry | null {
     }
   });
 
-  const hasValues = speedKnots !== null || headingDegrees !== null || depthFeet !== null || waterTempF !== null;
+  const hasValues = speedKnots !== null || headingDegrees !== null || depthFeet !== null || waterTempF !== null || (latitude !== null && longitude !== null);
   if (!hasValues) {
     return null;
   }
@@ -239,6 +312,8 @@ function parseNmea0183Telemetry(lines: string[]): NmeaTelemetry | null {
     headingDegrees,
     depthFeet,
     waterTempF,
+    latitude,
+    longitude,
     source: "NMEA 0183 serial bridge",
     updatedAt: new Date().toISOString(),
     sampledAtMs: Date.now()
@@ -317,7 +392,8 @@ async function fetchNmea0183Telemetry(mode: "full" | "quick" = "full"): Promise<
 }
 
 async function fetchSignalKVesselSelf(): Promise<Record<string, unknown> | null> {
-  const endpoint = `${SIGNALK_BASE_URL.replace(/\/$/, "")}/signalk/v1/api/vessels/self`;
+  const baseUrl = SIGNALK_BASE_URL.replace(/\/$/, "");
+  const endpoint = `${baseUrl}/signalk/v1/api/vessels/self`;
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), SIGNALK_TIMEOUT_MS);
 
@@ -329,12 +405,37 @@ async function fetchSignalKVesselSelf(): Promise<Record<string, unknown> | null>
       signal: controller.signal
     });
 
-    if (!response.ok) {
+    if (response.ok) {
+      const payload = asRecord((await response.json()) as unknown);
+      if (payload) {
+        return payload;
+      }
+    }
+
+    // Some Signal K deployments expose only /signalk/v1/api with a self pointer.
+    const rootResponse = await fetch(`${baseUrl}/signalk/v1/api/`, {
+      headers: {
+        Accept: "application/json"
+      },
+      signal: controller.signal
+    });
+
+    if (!rootResponse.ok) {
       return null;
     }
 
-    const payload = (await response.json()) as unknown;
-    return payload && typeof payload === "object" ? (payload as Record<string, unknown>) : null;
+    const rootPayload = asRecord((await rootResponse.json()) as unknown);
+    if (!rootPayload) {
+      return null;
+    }
+
+    const selfPath = typeof rootPayload.self === "string" ? rootPayload.self : null;
+    if (!selfPath || selfPath.length === 0) {
+      return null;
+    }
+
+    const resolved = readPath(rootPayload, selfPath);
+    return asRecord(resolved);
   } catch {
     return null;
   } finally {
@@ -370,6 +471,10 @@ function toTelemetry(vesselSelf: Record<string, unknown>): NmeaTelemetry {
     "environment.water.temp"
   ];
   const waterTemperature = firstNumber(vesselSelf, waterTempPaths);
+  const positionPaths = [
+    "navigation.position"
+  ];
+  const position = pickPosition(vesselSelf, positionPaths);
 
   let waterTempF: number | null = null;
   if (waterTemperature !== null) {
@@ -381,7 +486,8 @@ function toTelemetry(vesselSelf: Record<string, unknown>): NmeaTelemetry {
     latestTimestampForPaths(vesselSelf, speedPaths),
     latestTimestampForPaths(vesselSelf, headingPaths),
     latestTimestampForPaths(vesselSelf, depthPaths),
-    latestTimestampForPaths(vesselSelf, waterTempPaths)
+    latestTimestampForPaths(vesselSelf, waterTempPaths),
+    latestTimestampForPaths(vesselSelf, positionPaths)
   ].reduce<number | null>((latest, value) => {
     if (value === null) {
       return latest;
@@ -397,6 +503,8 @@ function toTelemetry(vesselSelf: Record<string, unknown>): NmeaTelemetry {
     headingDegrees: headingRadians === null ? null : radiansToDegrees(headingRadians),
     depthFeet: depthMeters === null ? null : metersToFeet(depthMeters),
     waterTempF,
+    latitude: position.latitude,
+    longitude: position.longitude,
     source: "NMEA 2000 via Signal K",
     updatedAt: latestSampleMs ? new Date(latestSampleMs).toISOString() : new Date().toISOString(),
     sampledAtMs: latestSampleMs
@@ -439,7 +547,11 @@ export async function getNmeaTelemetry(): Promise<NmeaResult> {
   }
 
   const telemetry = toTelemetry(vesselSelf);
-  const hasValues = telemetry.speedKnots !== null || telemetry.headingDegrees !== null || telemetry.depthFeet !== null || telemetry.waterTempF !== null;
+  const hasValues = telemetry.speedKnots !== null
+    || telemetry.headingDegrees !== null
+    || telemetry.depthFeet !== null
+    || telemetry.waterTempF !== null
+    || (telemetry.latitude !== null && telemetry.longitude !== null);
   const sampleAgeMs = telemetry.sampledAtMs === null ? Number.POSITIVE_INFINITY : now - telemetry.sampledAtMs;
   const hasFreshValues = hasValues && sampleAgeMs >= 0 && sampleAgeMs <= NMEA_STALE_MS;
 
