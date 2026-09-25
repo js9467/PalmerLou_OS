@@ -80,7 +80,7 @@ function isConfigured(command: string | undefined) {
 function timeoutForCommandId(id: string) {
   switch (id) {
     case "pair-command":
-      return 30000;
+      return 20000;
     case "reconnect-command":
       return 18000;
     case "route-command":
@@ -109,7 +109,7 @@ function resolveBuiltinCommand(action: BluetoothAction, mac: string) {
   }
 
   if (action === "pair") {
-    return `bluetoothctl power on; bluetoothctl pairable on; bluetoothctl discoverable on; timeout 8 bluetoothctl scan on >/dev/null 2>&1 || true; bluetoothctl agent on; bluetoothctl default-agent; bluetoothctl pair \"${mac}\"; bluetoothctl trust \"${mac}\"; bluetoothctl connect \"${mac}\"`;
+    return `bluetoothctl power on; bluetoothctl pairable on; bluetoothctl discoverable on; bluetoothctl agent on; bluetoothctl default-agent; bluetoothctl pair \"${mac}\"; bluetoothctl trust \"${mac}\"; bluetoothctl connect \"${mac}\"`;
   }
 
   if (action === "reconnect") {
@@ -128,7 +128,7 @@ function resolveBuiltinCommand(action: BluetoothAction, mac: string) {
       return `DEVICE_MAC="${mac}"; bluetoothctl power on; bluetoothctl connect "$DEVICE_MAC" >/dev/null 2>&1 || true; bluetoothctl info "$DEVICE_MAC" | grep -qi "Connected: yes" && echo connected || (echo "Bluetooth connect failed for $DEVICE_MAC" >&2; exit 1)`;
     }
 
-    return `DEVICE_MAC="${mac}"; bluetoothctl power on; bluetoothctl connect "$DEVICE_MAC" >/dev/null 2>&1 || true; if bluetoothctl info "$DEVICE_MAC" | grep -qi "Connected: yes"; then :; else echo "Bluetooth connect failed for $DEVICE_MAC" >&2; exit 1; fi; SINK_PATTERN="bluez_output.${mac.replaceAll(":", "_")}.a2dp"; if command -v wpctl >/dev/null 2>&1; then SINK_ID=$(wpctl status 2>/dev/null | grep -i "$SINK_PATTERN" | head -n1 | sed -E 's/.* ([0-9]+)\\..*/\\1/' || true); if [ -n "$SINK_ID" ]; then wpctl set-default "$SINK_ID" || true; fi; fi; if command -v pactl >/dev/null 2>&1; then SINK_NAME=$(pactl list short sinks 2>/dev/null | awk '{print $2}' | grep -i "$SINK_PATTERN" | head -n1 || true); if [ -n "$SINK_NAME" ]; then pactl set-default-sink "$SINK_NAME" || true; fi; fi; echo connected; exit 0`;
+    return `DEVICE_MAC="${mac}"; RUN_AS_USER="${(process.env.PALMER_LOU_LAUNCH_USER ?? "palmerlou").trim() || "palmerlou"}"; AUDIO_RUNTIME_DIR="${(process.env.PALMER_LOU_LAUNCH_XDG_RUNTIME_DIR ?? "/run/user/1000").trim() || "/run/user/1000"}"; bluetoothctl power on; bluetoothctl connect "$DEVICE_MAC" >/dev/null 2>&1 || true; if bluetoothctl info "$DEVICE_MAC" | grep -qi "Connected: yes"; then :; else echo "Bluetooth connect failed for $DEVICE_MAC" >&2; exit 1; fi; SINK_PATTERN="bluez_output.${mac.replaceAll(":", "_")}"; WPCTL_CMD=""; PACTL_CMD=""; if command -v wpctl >/dev/null 2>&1; then WPCTL_CMD="sudo -u $RUN_AS_USER XDG_RUNTIME_DIR=$AUDIO_RUNTIME_DIR wpctl"; fi; if command -v pactl >/dev/null 2>&1; then PACTL_CMD="sudo -u $RUN_AS_USER XDG_RUNTIME_DIR=$AUDIO_RUNTIME_DIR pactl"; fi; if [ -n "$WPCTL_CMD" ]; then SINK_ID=$(eval "$WPCTL_CMD status" 2>/dev/null | grep -Ei "$SINK_PATTERN(\\.a2dp)?" | head -n1 | sed -E 's/.* ([0-9]+)\\..*/\\1/' || true); if [ -n "$SINK_ID" ]; then eval "$WPCTL_CMD set-default $SINK_ID" || true; eval "$WPCTL_CMD set-mute $SINK_ID 0" || true; fi; fi; if [ -n "$PACTL_CMD" ]; then SINK_NAME=$(eval "$PACTL_CMD list short sinks" 2>/dev/null | awk '{print $2}' | grep -Ei "$SINK_PATTERN(\\.a2dp)?" | head -n1 || true); if [ -n "$SINK_NAME" ]; then eval "$PACTL_CMD set-default-sink $SINK_NAME" || true; eval "$PACTL_CMD set-sink-mute $SINK_NAME 0" || true; fi; fi; echo connected; exit 0`;
   }
 
   return null;

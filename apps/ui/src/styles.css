@@ -243,6 +243,87 @@ a,
   color: rgba(255, 180, 180, 0.9);
 }
 
+.restore-app-button--inline {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 10px 5px 6px;
+  background: rgba(22, 84, 138, 0.24);
+  border: 1px solid rgba(90, 176, 255, 0.5);
+  border-radius: 999px;
+  cursor: pointer;
+  transition: background 0.15s;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.restore-app-button--inline:active {
+  background: rgba(32, 112, 178, 0.34);
+}
+
+.restore-app-button--inline .restore-app-button__logo-wrap {
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
+}
+
+.restore-app-button--inline .restore-app-button__logo {
+  width: 24px;
+  height: 24px;
+}
+
+.restore-app-button__logo-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 8px;
+  overflow: visible;
+  background: rgba(10, 20, 30, 0.72);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.18);
+}
+
+.restore-app-button__logo {
+  width: 20px;
+  height: 20px;
+  object-fit: contain;
+  display: block;
+  filter: grayscale(0.06) contrast(1.1);
+}
+
+.restore-app-button__arrow {
+  position: absolute;
+  inset: -3px;
+  border-radius: 50%;
+  border: 2.5px solid rgba(92, 194, 255, 0.92);
+  border-right-color: transparent;
+  transform: rotate(-34deg);
+  pointer-events: none;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.28);
+}
+
+.restore-app-button__arrow::after {
+  content: "";
+  position: absolute;
+  right: -2px;
+  top: 1px;
+  width: 0;
+  height: 0;
+  border-top: 4px solid transparent;
+  border-bottom: 4px solid transparent;
+  border-left: 6px solid rgba(92, 194, 255, 0.92);
+  transform: rotate(24deg);
+}
+
+.restore-app-button__name {
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: rgba(196, 233, 255, 0.95);
+}
+
 .home-header::before {
   content: "";
   position: absolute;
@@ -516,6 +597,23 @@ a,
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
+}
+
+.fishing-page-switch--mode {
+  padding: 3px;
+  border: 1px solid rgba(122, 180, 255, 0.26);
+  border-radius: 10px;
+  background: rgba(7, 16, 24, 0.72);
+}
+
+.fishing-page-switch--mode .theme-toggle {
+  min-height: 34px;
+  padding: 8px 12px;
+  font-size: 0.72rem;
+}
+
+.drill-panel--fishing-map--navigate .fishing-map-shell {
+  border-color: rgba(92, 166, 225, 0.16);
 }
 
 .drill-panel--fishing-map {
@@ -939,9 +1037,9 @@ a,
 
 .fishing-map-header {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
-  gap: 10px;
+  gap: 8px;
 }
 
 .fishing-map-header h3 {
@@ -962,8 +1060,8 @@ a,
 
 .fishing-ocean-controls {
   display: grid;
-  gap: 8px;
-  padding: 10px;
+  gap: 6px;
+  padding: 8px;
   border-radius: 12px;
   border: 1px solid rgba(0, 192, 192, 0.18);
   background: rgba(0, 0, 0, 0.18);
@@ -971,7 +1069,7 @@ a,
 
 .fishing-ocean-controls__row {
   display: grid;
-  grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
+  grid-template-columns: minmax(0, 1fr);
   gap: 8px;
 }
 
@@ -999,7 +1097,7 @@ a,
 }
 
 .fishing-layer-presets__label {
-  font-size: 0.64rem;
+  font-size: 0.6rem;
   letter-spacing: 0.12em;
   text-transform: uppercase;
   color: var(--text-soft);
@@ -1009,42 +1107,42 @@ a,
 .fishing-map-confidence-legend {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 8px;
-  margin-top: 8px;
+  gap: 6px;
+  margin-top: 6px;
 }
 
 .fishing-map-confidence-legend__item {
   display: grid;
-  gap: 4px;
-  padding: 8px 10px;
+  gap: 3px;
+  padding: 7px 8px;
   border-radius: 10px;
   border: 1px solid rgba(255, 255, 255, 0.08);
   background: rgba(255, 255, 255, 0.03);
 }
 
 .fishing-map-confidence-legend__item strong {
-  font-size: 0.76rem;
+  font-size: 0.7rem;
   letter-spacing: 0.08em;
   text-transform: uppercase;
 }
 
 .fishing-map-confidence-legend__item span {
-  font-size: 0.7rem;
+  font-size: 0.64rem;
   color: var(--text-soft);
-  line-height: 1.35;
+  line-height: 1.25;
 }
 
 .fishing-overlay-toggle {
   display: flex;
   align-items: center;
   gap: 8px;
-  min-height: 38px;
-  padding: 8px 10px;
+  min-height: 34px;
+  padding: 7px 9px;
   border-radius: 10px;
   border: 1px solid rgba(255, 255, 255, 0.1);
   background: rgba(255, 255, 255, 0.03);
   color: var(--text-soft);
-  font-size: 0.76rem;
+  font-size: 0.7rem;
   letter-spacing: 0.08em;
   text-transform: uppercase;
 }
@@ -1091,6 +1189,50 @@ a,
   text-transform: uppercase;
 }
 
+.fishing-map-center-toggle {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  z-index: 1400;
+  min-height: 34px;
+  padding: 6px 12px;
+  border-radius: 8px;
+  border: 1px solid rgba(122, 180, 255, 0.45);
+  background: linear-gradient(180deg, rgba(36, 88, 156, 0.92), rgba(26, 62, 110, 0.92));
+  color: #eef6ff;
+  font-size: 0.66rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.map-nav-controls {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  z-index: 1400;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.map-nav-controls .fishing-map-center-toggle {
+  position: static;
+  top: auto;
+  left: auto;
+}
+
+.map-nav-controls__mode--active {
+  border-color: rgba(244, 200, 106, 0.85);
+  background: linear-gradient(180deg, rgba(146, 96, 28, 0.92), rgba(101, 63, 16, 0.92));
+}
+
+.fishing-map-center-toggle:disabled {
+  opacity: 0.56;
+  cursor: not-allowed;
+}
+
 .fishing-map-fullscreen-toggle {
   position: absolute;
   top: 8px;
@@ -1118,6 +1260,7 @@ a,
 }
 
 .fishing-map-shell--fullscreen .fishing-map-settings-toggle,
+.fishing-map-shell--fullscreen .fishing-map-center-toggle,
 .fishing-map-shell--fullscreen .fishing-map-fullscreen-toggle,
 .fishing-map-shell--fullscreen .fishing-map-settings,
 .fishing-map-shell--fullscreen .fishing-map-local-status,
@@ -1151,12 +1294,12 @@ a,
   top: 48px;
   right: 8px;
   z-index: 1400;
-  width: min(340px, calc(100% - 16px));
+  width: min(310px, calc(100% - 16px));
   max-height: calc(100% - 56px);
   overflow: auto;
   display: grid;
-  gap: 8px;
-  padding: 10px;
+  gap: 6px;
+  padding: 8px;
   border-radius: 10px;
   border: 1px solid rgba(122, 180, 255, 0.35);
   background: rgba(8, 16, 24, 0.94);
@@ -1165,7 +1308,7 @@ a,
 }
 
 .fishing-map-settings .fishing-field--compact span {
-  font-size: 0.62rem;
+  font-size: 0.58rem;
 }
 
 .fishing-map-settings__toggles {
@@ -1176,11 +1319,11 @@ a,
 
 .fishing-map-local-status {
   margin: 0;
-  padding: 8px 10px;
+  padding: 7px 9px;
   border-bottom: 1px solid rgba(90, 204, 255, 0.2);
   background: rgba(10, 34, 44, 0.86);
   color: rgba(210, 238, 250, 0.92);
-  font-size: 0.67rem;
+  font-size: 0.62rem;
   letter-spacing: 0.06em;
   text-transform: uppercase;
 }
@@ -1227,6 +1370,19 @@ a,
 .fishing-map-canvas .leaflet-map-pane,
 .fishing-map-canvas .leaflet-control-container {
   visibility: visible !important;
+}
+
+.fishing-map-canvas .fishing-ocean-raster {
+  image-rendering: auto;
+  filter: saturate(0.82) contrast(0.9);
+}
+
+.fishing-map-canvas .fishing-ocean-raster--sst {
+  filter: saturate(0.78) contrast(0.88);
+}
+
+.fishing-map-canvas .fishing-ocean-raster--chlorophyll {
+  filter: saturate(0.86) contrast(0.92);
 }
 
 .fishing-map-fallback {
@@ -1539,17 +1695,20 @@ a,
   background: rgba(8, 14, 20, 0.9);
   border: 1px solid rgba(255, 255, 255, 0.14);
   border-radius: 8px;
-  padding: 5px 0;
+  padding: 4px 0;
   backdrop-filter: blur(10px);
   pointer-events: all;
+  max-height: min(46%, 240px);
+  overflow-y: auto;
+  max-width: min(82%, 248px);
 }
 
 .fishing-map-intel-legend__item {
   display: flex;
   align-items: center;
-  gap: 7px;
+  gap: 6px;
   width: 100%;
-  padding: 4px 10px;
+  padding: 3px 8px;
   background: transparent;
   border: none;
   cursor: pointer;
@@ -1571,25 +1730,27 @@ a,
 
 .fishing-map-intel-legend__name {
   flex: 1;
-  font-size: 0.72rem;
+  font-size: 0.68rem;
   font-weight: 600;
   color: rgba(255, 255, 255, 0.9);
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .fishing-map-intel-legend__score {
-  font-size: 0.7rem;
+  font-size: 0.66rem;
   font-weight: 800;
   letter-spacing: 0.03em;
-  min-width: 22px;
+  min-width: 20px;
   text-align: right;
 }
 
 .fishing-map-intel-legend__dist {
-  font-size: 0.62rem;
+  font-size: 0.58rem;
   color: rgba(255, 255, 255, 0.45);
   white-space: nowrap;
-  min-width: 56px;
+  min-width: 50px;
   text-align: right;
 }
 
@@ -1603,7 +1764,7 @@ a,
   margin-top: 10px;
   display: grid;
   gap: 8px;
-  max-height: min(42vh, 360px);
+  max-height: min(56vh, 460px);
   overflow-y: auto;
   padding-right: 4px;
   overscroll-behavior: contain;
@@ -1715,29 +1876,29 @@ a,
 
 .fishing-map-legend {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 8px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
   margin-top: 4px;
 }
 
 .fishing-map-legend__item {
   display: grid;
-  gap: 6px;
-  padding: 8px;
+  gap: 4px;
+  padding: 6px;
   border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 10px;
+  border-radius: 8px;
   background: rgba(255, 255, 255, 0.03);
 }
 
 .fishing-map-legend__item span {
   color: var(--text-soft);
-  font-size: 0.72rem;
+  font-size: 0.66rem;
   letter-spacing: 0.08em;
   text-transform: uppercase;
 }
 
 .fishing-map-legend__bar {
-  height: 8px;
+  height: 7px;
   border-radius: 999px;
 }
 
@@ -1755,17 +1916,17 @@ a,
 
 .fishing-map-legend__item small {
   color: var(--text-soft);
-  font-size: 0.68rem;
+  font-size: 0.62rem;
 }
 
 .fishing-map-legend__swatches {
   display: flex;
-  gap: 6px;
+  gap: 4px;
 }
 
 .fishing-map-legend__swatches i {
-  width: 12px;
-  height: 12px;
+  width: 10px;
+  height: 10px;
   border-radius: 999px;
   border: 1px solid rgba(255, 255, 255, 0.3);
 }
@@ -3273,6 +3434,21 @@ a,
   backdrop-filter: blur(12px);
 }
 
+.camera-panel__connecting {
+  position: absolute;
+  left: 14px;
+  bottom: 14px;
+  z-index: 3;
+  padding: 8px 10px;
+  border-radius: 9px;
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  background: rgba(4, 12, 22, 0.76);
+  color: rgba(237, 246, 255, 0.94);
+  font-size: 0.72rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
 .camera-panel__footer,
 .overview-panel__meta,
 .selected-app-panel__footer,
@@ -3474,6 +3650,11 @@ a,
   line-height: 1.5;
 }
 
+.trip-card__actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
 .alerts-panel__list {
   margin: 0;
   padding-left: 18px;
@@ -3650,6 +3831,7 @@ a,
   --garmin-line-strong: rgba(88, 157, 255, 0.56);
   --garmin-tab: #0a0f16;
   --garmin-text-soft: rgba(234, 242, 252, 0.84);
+  --garmin-touch-target: 60px;
 }
 
 html,
@@ -3782,9 +3964,9 @@ body {
   border-radius: 8px;
   border-color: var(--garmin-line);
   background: rgba(255, 255, 255, 0.04);
-  min-height: 42px;
+  min-height: 46px;
   padding: 10px 14px;
-  font-size: 0.8rem;
+  font-size: 0.84rem;
   letter-spacing: 0.05em;
   text-transform: uppercase;
 }
@@ -3928,6 +4110,50 @@ body {
   left: 8px;
 }
 
+/* Garmin 8616 ergonomics: unify touch targets and legibility across pages */
+.dashboard.garmin-viewport:not(.dashboard--remote) {
+  font-size: 1.02rem;
+}
+
+.dashboard.garmin-viewport:not(.dashboard--remote) .theme-toggle,
+.dashboard.garmin-viewport:not(.dashboard--remote) .camera-fullscreen-btn,
+.dashboard.garmin-viewport:not(.dashboard--remote) .action-btn,
+.dashboard.garmin-viewport:not(.dashboard--remote) .settings-kiosk__pager-btn,
+.dashboard.garmin-viewport:not(.dashboard--remote) .vessel-panel__pager-btn,
+.dashboard.garmin-viewport:not(.dashboard--remote) .status-pill,
+.dashboard.garmin-viewport:not(.dashboard--remote) .trip-card__tag {
+  min-height: var(--garmin-touch-target);
+  padding: 10px 14px;
+  font-weight: 700;
+}
+
+.dashboard.garmin-viewport:not(.dashboard--remote) button,
+.dashboard.garmin-viewport:not(.dashboard--remote) [role="button"] {
+  touch-action: manipulation;
+}
+
+.dashboard.garmin-viewport:not(.dashboard--remote) input:not([type="range"]):not([type="checkbox"]):not([type="radio"]),
+.dashboard.garmin-viewport:not(.dashboard--remote) select,
+.dashboard.garmin-viewport:not(.dashboard--remote) textarea {
+  min-height: 48px;
+  font-size: 0.97rem;
+}
+
+.dashboard.garmin-viewport:not(.dashboard--remote) input[type="range"] {
+  min-height: 34px;
+}
+
+.dashboard.garmin-viewport:not(.dashboard--remote) .trip-card,
+.dashboard.garmin-viewport:not(.dashboard--remote) .metric-card,
+.dashboard.garmin-viewport:not(.dashboard--remote) .engine-card,
+.dashboard.garmin-viewport:not(.dashboard--remote) .update-card,
+.dashboard.garmin-viewport:not(.dashboard--remote) .fishing-card,
+.dashboard.garmin-viewport:not(.dashboard--remote) .weather-radar-card,
+.dashboard.garmin-viewport:not(.dashboard--remote) .weather-forecast,
+.dashboard.garmin-viewport:not(.dashboard--remote) .vessel-embed {
+  border-radius: 12px;
+}
+
 .dashboard.garmin-viewport .garmin-viewport {
   min-height: 0;
   padding: 8px;
@@ -3961,6 +4187,14 @@ body {
   flex-shrink: 0;
 }
 
+.garmin-content--viewport > .drill-panel .panel__header {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  padding: 2px 0 8px;
+  background: linear-gradient(180deg, rgba(6, 11, 18, 0.96), rgba(6, 11, 18, 0.82) 70%, rgba(6, 11, 18, 0));
+}
+
 /* Tiles panel fills remaining space and clips rather than overflows */
 .garmin-content--viewport > .home-panel .home-splash__tiles-panel {
   flex: 1;
@@ -3982,6 +4216,33 @@ body {
   overflow-y: auto;
   overscroll-behavior: contain;
   -webkit-overflow-scrolling: touch;
+}
+
+.garmin-content--viewport > .drill-panel--weather,
+.garmin-content--viewport > .drill-panel--trips,
+.garmin-content--viewport > .drill-panel--vessel {
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+}
+
+.garmin-content--viewport > .drill-panel--weather > *:not(.panel__header),
+.garmin-content--viewport > .drill-panel--trips > *:not(.panel__header),
+.garmin-content--viewport > .drill-panel--vessel > *:not(.panel__header) {
+  flex: 0 0 auto;
+  min-height: 0;
+  overflow: visible;
+}
+
+.garmin-content--viewport > .drill-panel--trips .trip-route-top,
+.garmin-content--viewport > .drill-panel--trips .trip-breadcrumb-panel,
+.garmin-content--viewport > .drill-panel--trips .trips-panel {
+  flex: 0 0 auto;
+}
+
+.drill-panel--trips .trips-panel {
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 10px;
 }
 
 .panel {
@@ -4018,18 +4279,24 @@ body {
 
 .settings-kiosk__pager {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 8px;
 }
 
+.settings-kiosk__pager--compact {
+  gap: 6px;
+}
+
 .settings-kiosk__pager-btn {
-  min-height: 46px;
+  min-height: 34px;
+  padding: 4px 8px;
   border-radius: 10px;
   border: 1px solid var(--garmin-line);
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.05), rgba(0, 0, 0, 0.2));
   color: rgba(236, 245, 255, 0.92);
   text-transform: uppercase;
-  letter-spacing: 0.08em;
+  letter-spacing: 0.06em;
+  font-size: 0.74rem;
   font-weight: 700;
 }
 
@@ -4051,15 +4318,47 @@ body {
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
+.settings-kiosk__summary--compact {
+  gap: 8px;
+}
+
+.settings-kiosk__summary--compact .home-panel__quick-card {
+  min-height: 0;
+  padding: 10px 12px;
+  gap: 4px;
+}
+
+.settings-kiosk__summary--compact .home-panel__quick-card strong {
+  font-size: 0.92rem;
+}
+
+.settings-kiosk__summary--compact .home-panel__quick-card span {
+  font-size: 0.74rem;
+}
+
 .settings-kiosk__actions {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 10px;
+  gap: 8px;
+}
+
+.settings-header-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+}
+
+.settings-kiosk__actions .theme-toggle,
+.settings-kiosk__actions .theme-toggle--primary {
+  min-height: 40px;
+  padding: 7px 10px;
+  font-size: 0.82rem;
+  letter-spacing: 0.03em;
 }
 
 .settings-kiosk__scan {
   margin-top: 0;
-  padding-top: 10px;
+  padding-top: 6px;
 }
 
 .settings-kiosk__hint {
@@ -4078,6 +4377,258 @@ body {
   letter-spacing: 0.1em;
   text-transform: uppercase;
   color: rgba(226, 238, 255, 0.78);
+}
+
+.settings-kiosk__field-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 10px;
+}
+
+.vessel-panel {
+  display: grid;
+  gap: 10px;
+}
+
+.vessel-panel__systems {
+  display: grid;
+  gap: 10px;
+}
+
+.my-vessel-layout {
+  gap: 8px;
+}
+
+.my-vessel-layout__summary {
+  gap: 8px;
+}
+
+.my-vessel-layout__summary .home-panel__quick-card {
+  padding: 10px;
+  gap: 6px;
+}
+
+.my-vessel-layout__summary .home-panel__quick-card strong {
+  font-size: 0.95rem;
+}
+
+.my-vessel-layout__summary .home-panel__quick-label {
+  font-size: 0.62rem;
+  letter-spacing: 0.12em;
+}
+
+.my-vessel-layout__main {
+  display: grid;
+  grid-template-columns: minmax(0, 1.25fr) minmax(330px, 0.75fr);
+  gap: 8px;
+  align-items: start;
+}
+
+.my-vessel-layout__controls {
+  display: grid;
+  gap: 8px;
+  align-content: start;
+}
+
+.home-port-map-shell {
+  display: grid;
+  gap: 6px;
+  padding: 8px;
+  border-radius: 12px;
+  border: 1px solid rgba(122, 180, 255, 0.34);
+  background: rgba(8, 17, 28, 0.68);
+}
+
+.home-port-map {
+  width: 100%;
+  height: clamp(180px, 28vh, 280px);
+  min-height: 170px;
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.home-port-map__hint {
+  margin: 0;
+  font-size: 0.72rem;
+  color: rgba(223, 237, 252, 0.84);
+  letter-spacing: 0.03em;
+}
+
+.my-vessel-layout .settings-kiosk__field-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.my-vessel-layout .settings-kiosk__field {
+  gap: 6px;
+}
+
+.my-vessel-layout .settings-kiosk__field > span {
+  font-size: 0.62rem;
+}
+
+.my-vessel-layout .settings-kiosk__field input[type="number"] {
+  min-height: 38px;
+}
+
+.my-vessel-layout .settings-kiosk__actions {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.my-vessel-layout .settings-kiosk__actions .theme-toggle,
+.my-vessel-layout .settings-kiosk__actions .theme-toggle--primary {
+  min-height: 40px;
+  font-size: 0.74rem;
+  letter-spacing: 0.08em;
+}
+
+@media (max-width: 1280px) {
+  .my-vessel-layout__main {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .home-port-map {
+    height: clamp(170px, 24vh, 230px);
+    min-height: 160px;
+  }
+}
+
+.vessel-panel__systems--hidden,
+.vessel-embed--hidden {
+  display: none;
+}
+
+.vessel-panel__pager {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.vessel-panel__pager-btn {
+  min-height: var(--garmin-touch-target);
+  border-radius: 10px;
+  border: 1px solid var(--garmin-line);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.05), rgba(0, 0, 0, 0.2));
+  color: rgba(236, 245, 255, 0.92);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-weight: 700;
+}
+
+.vessel-panel__pager-btn--active {
+  border-color: rgba(122, 180, 255, 0.8);
+  background: linear-gradient(180deg, rgba(57, 123, 207, 0.95), rgba(34, 84, 156, 0.98));
+}
+
+.vessel-embed {
+  display: grid;
+  gap: 10px;
+  padding: 10px;
+  border-radius: 10px;
+  border: 1px solid rgba(122, 180, 255, 0.36);
+  background:
+    radial-gradient(circle at top right, rgba(122, 180, 255, 0.11), transparent 40%),
+    linear-gradient(180deg, rgba(9, 21, 34, 0.92), rgba(6, 14, 24, 0.94));
+}
+
+.vessel-embed--fullscreen-mode {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+  padding: 0;
+  background: #02070c;
+}
+
+.vessel-embed--fullscreen-mode .vessel-embed__header {
+  display: none;
+}
+
+.vessel-embed__header {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.vessel-embed__header h3 {
+  margin: 0;
+  font-size: 0.98rem;
+}
+
+.vessel-embed__frame-shell {
+  width: 100%;
+  height: clamp(360px, 60vh, 900px);
+  min-height: 340px;
+  border-radius: 10px;
+  border: 1px solid rgba(122, 180, 255, 0.28);
+  overflow: hidden;
+  background: rgba(6, 12, 18, 0.9);
+}
+
+.vessel-embed__frame {
+  width: 100%;
+  height: 100%;
+  border: 0;
+  background: rgba(8, 16, 24, 0.96);
+}
+
+.vessel-embed-fullscreen {
+  background: #02070c;
+}
+
+.vessel-embed__frame-shell--fullscreen {
+  width: 100vw !important;
+  height: 100vh !important;
+  min-height: 100vh !important;
+  border-radius: 0;
+  border: 0;
+  background: #000;
+}
+
+.vessel-embed__frame--fullscreen {
+  width: 100vw !important;
+  height: 100vh !important;
+  min-height: 100vh !important;
+}
+
+.vessel-embed-fullscreen__toolbar {
+  position: absolute;
+  top: 16px;
+  left: 16px;
+  right: 16px;
+  z-index: 10001;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(122, 180, 255, 0.42);
+  background: rgba(4, 12, 20, 0.82);
+  backdrop-filter: blur(6px);
+}
+
+.vessel-embed-fullscreen__toolbar-meta {
+  display: grid;
+  gap: 3px;
+}
+
+.vessel-embed-fullscreen__toolbar-meta strong {
+  font-size: 0.88rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: rgba(236, 246, 255, 0.96);
+}
+
+.vessel-embed__note {
+  margin: 0;
+  font-size: 0.68rem;
+  letter-spacing: 0.05em;
+  color: rgba(220, 236, 255, 0.78);
 }
 
 .wifi-password-field {
@@ -4186,16 +4737,18 @@ body {
 }
 
 .settings-kiosk .theme-toggle {
-  min-height: 50px;
+  min-height: 42px;
+  padding: 7px 10px;
+  font-size: 0.84rem;
 }
 
 .settings-kiosk .bt-device-item {
-  min-height: 64px;
+  min-height: 56px;
   border-radius: 12px;
 }
 
 .settings-kiosk .bt-device-item .theme-toggle {
-  min-width: 96px;
+  min-width: 80px;
 }
 
 .settings-kiosk .remote-ops-output {
@@ -4847,6 +5400,13 @@ body {
   gap: 8px;
 }
 
+.weather-panel__header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
 .weather-radar-map-shell {
   position: relative;
   min-height: 0;
@@ -4854,7 +5414,8 @@ body {
 
 .weather-radar-map {
   width: 100%;
-  height: 290px;
+  height: clamp(340px, 52vh, 760px);
+  min-height: 300px;
   border-radius: 10px;
   overflow: hidden;
   border: 1px solid rgba(122, 180, 255, 0.28);
@@ -4883,11 +5444,247 @@ body {
 
 .trip-route-map-shell {
   width: 100%;
-  height: 290px;
-  min-height: 240px;
+  height: clamp(340px, 52vh, 760px);
+  min-height: 300px;
   margin-bottom: 16px;
   border-radius: 12px;
   overflow: hidden;
+}
+
+.trip-mode-banner {
+  margin-top: -4px;
+  margin-bottom: 4px;
+  padding: 10px 12px;
+  border: 1px solid rgba(122, 180, 255, 0.35);
+  border-radius: 10px;
+  background: rgba(6, 18, 30, 0.7);
+  color: rgba(228, 243, 255, 0.94);
+  font-size: 0.82rem;
+  letter-spacing: 0.05em;
+}
+
+.trip-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.trip-controls {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 12px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.trip-radius-control {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 260px;
+  font-size: 0.92rem;
+  padding: 8px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.trip-radius-control input[type="range"] {
+  flex: 1;
+}
+
+.trip-home-port-pill {
+  display: grid;
+  gap: 2px;
+  min-width: 230px;
+  padding: 8px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.trip-home-port-pill span {
+  font-size: 0.68rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-soft);
+}
+
+.trip-home-port-pill strong {
+  font-size: 0.86rem;
+  color: var(--text);
+}
+
+.trip-home-port-pill small {
+  font-size: 0.74rem;
+  color: var(--text-soft);
+}
+
+.trip-history-picker {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 280px;
+  font-size: 0.86rem;
+  padding: 8px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.trip-history-picker span {
+  white-space: nowrap;
+  color: var(--text-soft);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  font-size: 0.68rem;
+}
+
+.trip-history-picker select {
+  flex: 1;
+  min-height: 36px;
+}
+
+.trip-control-message {
+  margin: -2px 0 8px;
+  padding: 10px 12px;
+  border: 1px solid rgba(122, 180, 255, 0.3);
+  border-radius: 10px;
+  background: rgba(8, 16, 26, 0.5);
+  color: rgba(226, 239, 252, 0.92);
+  font-size: 0.84rem;
+}
+
+.trip-detail__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.trip-detail__title {
+  margin: 4px 0 0;
+}
+
+.trip-route-top {
+  display: grid;
+  grid-template-columns: minmax(320px, 1fr) minmax(0, 1.45fr);
+  gap: 12px;
+  align-items: stretch;
+  margin-bottom: 12px;
+}
+
+.trip-route-top--map-only {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.trip-route-top .trip-detail {
+  margin-bottom: 0 !important;
+}
+
+.trip-mfd-panel {
+  align-content: start;
+}
+
+.trip-mfd-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(118px, 1fr));
+  gap: 8px;
+}
+
+.trip-mfd-grid > div {
+  padding: 8px;
+  border-radius: 10px;
+  border: 1px solid rgba(0, 192, 192, 0.16);
+  background: rgba(0, 0, 0, 0.18);
+}
+
+.trip-mfd-grid > div strong {
+  display: block;
+  font-size: 1rem;
+  line-height: 1.1;
+}
+
+.trip-mfd-grid > div div {
+  margin-top: 2px;
+  color: var(--text-soft);
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.trip-mfd-latest-row,
+.trip-mfd-time-row {
+  margin-top: 8px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  color: var(--text-soft);
+  font-size: 0.8rem;
+}
+
+.trip-mfd-latest-row span,
+.trip-mfd-time-row span {
+  padding: 4px 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.trip-breadcrumb-panel--padded {
+  padding: 16px;
+}
+
+.trip-breadcrumb-panel__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.trip-breadcrumb-panel__eyebrow {
+  margin: 0;
+}
+
+.trip-breadcrumb-panel__count {
+  font-size: 0.78rem;
+  opacity: 0.8;
+}
+
+.trip-breadcrumb-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.78rem;
+}
+
+.trip-breadcrumb-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: rgba(10, 19, 30, 0.95);
+}
+
+.trip-route-map-shell--top {
+  margin-bottom: 0;
+  height: clamp(300px, 46vh, 580px);
+  min-height: 280px;
+}
+
+.trip-history-empty {
+  padding: 14px;
+  border: 1px solid rgba(122, 180, 255, 0.3);
+}
+
+.trip-breadcrumb-panel {
+  margin-bottom: 12px;
+}
+
+.trip-breadcrumb-log {
+  max-height: min(24vh, 210px);
+  overflow-y: auto;
 }
 
 .trip-route-map {
@@ -4896,6 +5693,24 @@ body {
   border-radius: 12px;
   border: 1px solid rgba(122, 180, 255, 0.24);
   overflow: hidden;
+}
+
+.fishing-map-canvas .leaflet-control-zoom,
+.weather-radar-map .leaflet-control-zoom,
+.trip-route-map .leaflet-control-zoom {
+  border: 1px solid rgba(122, 180, 255, 0.42);
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.35);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.fishing-map-canvas .leaflet-control-zoom a,
+.weather-radar-map .leaflet-control-zoom a,
+.trip-route-map .leaflet-control-zoom a {
+  width: 44px;
+  height: 44px;
+  line-height: 44px;
+  font-size: 1.4rem;
 }
 
 .trip-route-map--fullscreen {
@@ -4926,6 +5741,35 @@ body {
   background: rgba(4, 12, 20, 0.84);
   color: rgba(236, 246, 255, 0.95);
   backdrop-filter: blur(6px);
+}
+
+.weather-radar-fullscreen__toolbar {
+  position: absolute;
+  top: 16px;
+  left: 16px;
+  right: 16px;
+  z-index: 10001;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(122, 180, 255, 0.42);
+  background: rgba(4, 12, 20, 0.82);
+  backdrop-filter: blur(6px);
+}
+
+.weather-radar-fullscreen__toolbar-meta {
+  display: grid;
+  gap: 3px;
+}
+
+.weather-radar-fullscreen__toolbar-meta strong {
+  font-size: 0.88rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: rgba(236, 246, 255, 0.96);
 }
 
 .weather-radar-fullscreen__hud strong {
@@ -5009,12 +5853,31 @@ body {
   }
 
   .weather-radar-map {
-    height: 240px;
+    height: clamp(300px, 48vh, 620px);
+    min-height: 280px;
   }
 
   .trip-route-map-shell {
-    height: 240px;
-    min-height: 220px;
+    height: clamp(300px, 48vh, 620px);
+    min-height: 280px;
+  }
+
+  .trip-route-top {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .trip-route-map-shell--top {
+    height: clamp(280px, 44vh, 500px);
+    min-height: 260px;
+  }
+
+  .vessel-panel__pager {
+    grid-template-columns: 1fr;
+  }
+
+  .vessel-embed__frame-shell {
+    height: clamp(320px, 56vh, 760px);
+    min-height: 300px;
   }
 }
 
@@ -5081,6 +5944,8 @@ body {
 }
 
 .garmin-tabbar {
+  position: relative;
+  z-index: 6;
   display: grid;
   grid-template-columns: repeat(9, minmax(0, 1fr));
   gap: 6px;
@@ -5093,7 +5958,10 @@ body {
   display: grid;
   place-items: center;
   gap: 2px;
-  min-height: 62px;
+  min-height: 70px;
+  user-select: none;
+  -webkit-user-select: none;
+  touch-action: manipulation;
   border-radius: 8px;
   border: 1px solid transparent;
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.03), rgba(0, 0, 0, 0.18));
@@ -5114,7 +5982,7 @@ body {
 }
 
 .garmin-tabbar__label {
-  font-size: 0.82rem;
+  font-size: 0.86rem;
   font-weight: 700;
   letter-spacing: 0.06em;
   text-transform: uppercase;
@@ -5274,6 +6142,7 @@ body {
 .remote-only-header {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 10px;
   padding: 8px 12px;
   border-radius: 14px;
@@ -5287,6 +6156,34 @@ body {
   align-items: center;
   gap: 6px;
   flex: 1;
+  min-width: 0;
+}
+
+.remote-only-header .kill-app-button--inline {
+  margin-left: auto;
+  max-width: 100%;
+  min-width: 0;
+}
+
+.remote-only-header .restore-app-button--inline {
+  max-width: 100%;
+  min-width: 0;
+}
+
+.remote-only-header .kill-app-button__name {
+  display: block;
+  max-width: min(52vw, 190px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.remote-only-header .restore-app-button__name {
+  display: block;
+  max-width: min(52vw, 190px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .remote-only-body {
@@ -5388,18 +6285,63 @@ body {
 }
 
 .camera-fullscreen-btn {
-  padding: 6px 10px;
-  border-radius: 6px;
+  min-height: var(--garmin-touch-target);
+  padding: 8px 12px;
+  border-radius: 8px;
   background: rgba(255, 255, 255, 0.08);
   border: 1px solid rgba(255, 255, 255, 0.18);
   color: var(--text);
-  font-size: 1.1rem;
+  font-size: 0.92rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
   cursor: pointer;
   line-height: 1;
 }
 
 .camera-fullscreen-btn:active {
   background: rgba(255, 255, 255, 0.16);
+}
+
+.camera-fullscreen-btn.theme-toggle--primary {
+  border-color: rgba(244, 200, 106, 0.86);
+  background: linear-gradient(180deg, rgba(146, 96, 28, 0.92), rgba(101, 63, 16, 0.94));
+}
+
+.map-mode-icon-btn {
+  min-width: 72px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+
+.map-mode-icon-btn span:first-child {
+  font-size: 0.92rem;
+  line-height: 1;
+}
+
+.action-btn {
+  min-height: var(--garmin-touch-target);
+  border-radius: 10px;
+  border: 1px solid rgba(122, 180, 255, 0.48);
+  background: linear-gradient(180deg, rgba(57, 123, 207, 0.9), rgba(34, 84, 156, 0.96));
+  color: #eef6ff;
+  padding: 10px 14px;
+  font-size: 0.9rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.action-btn--danger {
+  border-color: rgba(255, 157, 157, 0.58);
+  background: linear-gradient(180deg, rgba(154, 47, 47, 0.96), rgba(111, 31, 31, 0.98));
+  color: #fff2f2;
+}
+
+@media (max-width: 1240px) {
 }
 
 .remote-launch-status {
@@ -5453,6 +6395,49 @@ body {
   margin-top: 6px;
 }
 
+.remote-trackpad {
+  margin-top: 8px;
+  min-height: 124px;
+  border-radius: 12px;
+  border: 1px solid rgba(122, 180, 255, 0.34);
+  background:
+    radial-gradient(circle at 28% 22%, rgba(122, 180, 255, 0.2), transparent 50%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.04), rgba(0, 0, 0, 0.18));
+  display: grid;
+  align-content: center;
+  justify-items: center;
+  gap: 5px;
+  text-align: center;
+  color: var(--text-soft);
+  user-select: none;
+  -webkit-user-select: none;
+  touch-action: none;
+  cursor: pointer;
+}
+
+.remote-trackpad:active {
+  border-color: rgba(122, 180, 255, 0.62);
+  box-shadow: inset 0 0 0 1px rgba(122, 180, 255, 0.35);
+}
+
+.remote-trackpad:focus-visible {
+  outline: 2px solid rgba(122, 180, 255, 0.74);
+  outline-offset: 2px;
+}
+
+.remote-trackpad__label {
+  font-size: 0.8rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: rgba(236, 246, 255, 0.92);
+}
+
+.remote-trackpad__hint {
+  font-size: 0.72rem;
+  letter-spacing: 0.03em;
+  color: var(--text-soft);
+}
+
 .remote-btn {
   min-height: 44px;
   border-radius: 10px;
@@ -5472,6 +6457,7 @@ body {
 
 .keyboard-toggle-row {
   margin-top: 6px;
+  grid-template-columns: repeat(auto-fit, minmax(132px, 1fr));
 }
 
 .keyboard-panel {
@@ -5628,8 +6614,33 @@ body {
   }
 
   body:not(.remote-mode) .garmin-content--viewport > .drill-panel > .trip-route-map-shell {
-    height: 240px !important;
-    min-height: 220px !important;
+    height: min(58svh, 420px) !important;
+    min-height: 300px !important;
     overflow: hidden;
+  }
+
+  body:not(.remote-mode) .drill-panel--fishing-map,
+  body:not(.remote-mode) .drill-panel--fishing-map .fishing-layout,
+  body:not(.remote-mode) .drill-panel--fishing-map .fishing-report-stack,
+  body:not(.remote-mode) .drill-panel--fishing-map .fishing-map-pane {
+    height: auto !important;
+    min-height: 0 !important;
+    overflow: visible !important;
+  }
+
+  body:not(.remote-mode) .drill-panel--fishing-map .fishing-map-shell {
+    min-height: 0;
+    overflow: hidden;
+  }
+
+  body:not(.remote-mode) .drill-panel--fishing-map .fishing-map-canvas,
+  body:not(.remote-mode) .drill-panel--fishing-map .fishing-map-fallback {
+    height: min(52svh, 380px) !important;
+    min-height: 220px !important;
+  }
+
+  body:not(.remote-mode) .drill-panel--fishing-map .fishing-map-canvas,
+  body:not(.remote-mode) .drill-panel--fishing-map .fishing-map-canvas .leaflet-container {
+    touch-action: pan-y pinch-zoom;
   }
 }
