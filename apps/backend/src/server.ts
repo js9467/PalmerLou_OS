@@ -23,7 +23,7 @@ const OCEAN_TILE_CACHE_TTL_MS = 1000 * 60 * 15;
 const OCEAN_TILE_CACHE_LIMIT = 1200;
 const TRANSPARENT_PNG_BUFFER = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/w8AAgMBgBqWcN0AAAAASUVORK5CYII=", "base64");
 const signalKUrl = new URL(signalKBaseUrl);
-const SIGNALK_PROXY_PREFIXES = ["/signalk", "/admin", "/plugins", "/@signalk", "/socket.io", "/signalk-"];
+const SIGNALK_PROXY_PREFIXES = ["/signalk", "/admin", "/plugins", "/@signalk", "/socket.io", "/signalk-", "/skServer", "/apps", "/restart"];
 
 const HOP_BY_HOP_HEADERS = new Set([
   "connection",
