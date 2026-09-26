@@ -1666,6 +1666,13 @@ export function App() {
   const initialFishingMapPrefs = readFishingMapPrefs();
   const remoteMode = isRemoteModeUrl();
   const remoteAccessUrl = typeof window === "undefined" ? REMOTE_ACCESS_PATH : `${window.location.origin}${REMOTE_ACCESS_PATH}`;
+  const signalKAdminUrl = typeof window === "undefined" ? "/admin/#/dashboard" : `${window.location.origin}/admin/#/dashboard`;
+  const compactSettingsTabStyle = {
+    minHeight: "30px",
+    padding: "4px 8px",
+    fontSize: "0.72rem",
+    letterSpacing: "0.05em"
+  };
   const [summary, setSummary] = useState<DashboardSummary | null>(null);
   const [online, setOnline] = useState(true);
   const [selectedAppId, setSelectedAppId] = useState("streaming");
@@ -7856,6 +7863,7 @@ export function App() {
               role="tab"
               aria-selected={settingsSubview === "bluetooth"}
               className={settingsSubview === "bluetooth" ? "settings-kiosk__pager-btn settings-kiosk__pager-btn--active" : "settings-kiosk__pager-btn"}
+              style={compactSettingsTabStyle}
               onClick={() => setSettingsSubview("bluetooth")}
             >
               Bluetooth
@@ -7865,6 +7873,7 @@ export function App() {
               role="tab"
               aria-selected={settingsSubview === "wifi"}
               className={settingsSubview === "wifi" ? "settings-kiosk__pager-btn settings-kiosk__pager-btn--active" : "settings-kiosk__pager-btn"}
+              style={compactSettingsTabStyle}
               onClick={() => {
                 setSettingsSubview("wifi");
                 setWifiHasManualScan(false);
@@ -7878,6 +7887,7 @@ export function App() {
               role="tab"
               aria-selected={settingsSubview === "remote"}
               className={settingsSubview === "remote" ? "settings-kiosk__pager-btn settings-kiosk__pager-btn--active" : "settings-kiosk__pager-btn"}
+              style={compactSettingsTabStyle}
               onClick={() => setSettingsSubview("remote")}
             >
               Remote
@@ -7887,6 +7897,7 @@ export function App() {
               role="tab"
               aria-selected={settingsSubview === "updates"}
               className={settingsSubview === "updates" ? "settings-kiosk__pager-btn settings-kiosk__pager-btn--active" : "settings-kiosk__pager-btn"}
+              style={compactSettingsTabStyle}
               onClick={() => setSettingsSubview("updates")}
             >
               Updates
@@ -8075,6 +8086,9 @@ export function App() {
                   <button className="theme-toggle" type="button" onClick={() => void handleRemoteTunnelAction("status")} disabled={runningRemoteTunnelAction !== null}>Refresh tunnel</button>
                   <button className="theme-toggle" type="button" onClick={() => void handleRemoteTunnelAction("start")} disabled={runningRemoteTunnelAction !== null}>Start tunnel</button>
                   <button className="theme-toggle" type="button" onClick={() => void handleRemoteTunnelAction("restart")} disabled={runningRemoteTunnelAction !== null}>Restart tunnel</button>
+                  <button className="theme-toggle theme-toggle--primary" type="button" onClick={() => window.location.assign(signalKAdminUrl)}>
+                    Open Signal K Admin
+                  </button>
                 </div>
 
                 <button className="theme-toggle" type="button" onClick={() => void refreshRemoteOpsStatus()}>
