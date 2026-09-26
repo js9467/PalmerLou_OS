@@ -1,104 +1,40 @@
 import http from "node:http";
-import { createReadStream, existsSync, statSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { spawn, type ChildProcessByStdio } from "node:child_process";
+import { createReadStream, existsSync, statSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import type { Readable } from "node:stream";
-import { applyBluetoothAction, getBluetoothState, runBluetoothDiagnostics, scanBluetoothDevices, configureBluetoothDevice, type BluetoothAction } from "./bluetooth.js";
+import { applyBluetoothAction, getBluetoothState, runBluetoothDiagnostics, type BluetoothAction } from "./bluetooth.js";
 import { dashboardSummary } from "./mock-data.js";
 import { getNmeaTelemetry } from "./nmea.js";
-import { getLauncherState, killLaunchedApp, launchApp, returnToHome } from "./launcher.js";
-import { getRemoteAccessStatus, getRemoteUpdateStatus, runRemoteControlAction, runRemoteTypeAction, runRemoteUpdate, runTunnelAction, type RemoteAccessStatus, type RemoteControlAction } from "./remote.js";
-import { getSignalKIntegrationStatus, loadCruiseReportTrips, loadWindyForecast } from "./signalk-integrations.js";
+import { getLauncherState, launchApp, returnToHome } from "./launcher.js";
+import { getRemoteAccessStatus, getRemoteUpdateStatus, runRemoteUpdate, runTunnelAction, type RemoteAccessStatus } from "./remote.js";
 import { resolveUpdateStatus } from "./update.js";
-import { disconnectWifiNetwork, joinWifiNetwork, scanWifiNetworks } from "./wifi.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, "../../..");
-const stateDir = path.resolve(repoRoot, "state");
-const homePortConfigPath = path.resolve(stateDir, "home-port-config.json");
 const uiDist = path.resolve(repoRoot, "apps/ui/dist");
 const brandArtwork = path.resolve(repoRoot, "images/Palmer Lou Artwork.png");
 const port = Number(process.env.PORT ?? 8787);
+const signalKBaseUrl = process.env.PALMER_LOU_SIGNALK_BASE_URL ?? "http://127.0.0.1:3000";
 const requireBluetoothReady = (process.env.PALMER_LOU_REQUIRE_BLUETOOTH_READY ?? "false").toLowerCase() === "true";
 const currentVersion = dashboardSummary.version.currentVersion;
 const currentChannel = dashboardSummary.version.channel;
 const oceanTileCache = new Map<string, { expiresAt: number; contentType: string; body: Buffer }>();
 const OCEAN_TILE_CACHE_TTL_MS = 1000 * 60 * 15;
 const OCEAN_TILE_CACHE_LIMIT = 1200;
-const OCEAN_CURRENT_VECTOR_CACHE_TTL_MS = 1000 * 60 * 5;
-const OCEAN_CURRENT_RATE_LIMIT_COOLDOWN_MS = 1000 * 60;
-const stormRadarTileCache = new Map<string, { expiresAt: number; contentType: string; body: Buffer }>();
-const STORM_RADAR_TILE_CACHE_TTL_MS = 1000 * 60 * 5;
-const STORM_RADAR_TILE_CACHE_LIMIT = 1600;
-const STORM_RADAR_FRAME_TTL_MS = 1000 * 60 * 3;
-const STORM_RADAR_MAX_NATIVE_ZOOM = 8;
-const CAMERA_STREAM_STOP_DELAY_MS = 5000;
-const EXTERNAL_WEATHER_CACHE_TTL_MS = 1000 * 60 * 5;
-const WEATHER_FETCH_TIMEOUT_MS = 12000;
-const DEFAULT_HOME_LAT = Number.parseFloat(process.env.PALMER_LOU_HOME_LAT ?? "34.7229");
-const DEFAULT_HOME_LON = Number.parseFloat(process.env.PALMER_LOU_HOME_LON ?? "-76.7260");
 const TRANSPARENT_PNG_BUFFER = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/w8AAgMBgBqWcN0AAAAASUVORK5CYII=", "base64");
-const SIGNALK_PROXY_BASE_URL = (process.env.PALMER_LOU_SIGNALK_PROXY_BASE_URL ?? "http://127.0.0.1:3000").replace(/\/$/, "");
+const signalKUrl = new URL(signalKBaseUrl);
+const SIGNALK_PROXY_PREFIXES = ["/signalk", "/admin", "/plugins", "/@signalk", "/socket.io", "/signalk-"];
 
-type HomePortConfig = {
-  latitude: number | null;
-  longitude: number | null;
-  radiusNm: number;
-  updatedAt: string;
-};
-
-let cameraStreamProcess: ChildProcessByStdio<null, Readable, Readable> | null = null;
-let cameraStreamStopTimer: NodeJS.Timeout | null = null;
-const cameraStreamClients = new Set<http.ServerResponse>();
-let cameraLastStartAt = 0;
-let cameraLastFrameAt = 0;
-let cameraRestartCount = 0;
-let cameraLastError: string | null = null;
-let cameraLastExitCode: number | null = null;
-let cameraLastExitSignal: NodeJS.Signals | null = null;
-let cameraLastStderr = "";
-let cameraLastCandidateList: string[] = [];
-let externalMarineWeatherCache: {
-  expiresAt: number;
-  key: string;
-  data: {
-    windKnots: number | null;
-    barometerHpa: number | null;
-    waterTempF: number | null;
-    tideFeet: number | null;
-    tideTrend: "rising" | "falling" | "steady" | null;
-    source: string;
-    cards: Array<{
-      label: string;
-      windKnots: number;
-      waveFeet: number;
-      outlook: string;
-      observedAt: string | null;
-    }>;
-  };
-} | null = null;
-
-type RainViewerFrame = {
-  path: string;
-  time: number | null;
-  kind: "past" | "nowcast" | "future";
-};
-
-type OceanCurrentVector = {
-  latitude: number;
-  longitude: number;
-  speedKmh: number;
-  speedKnots: number;
-  directionDegrees: number;
-  observedAt: string;
-};
-let stormRadarFrameCache: {
-  fetchedAt: number;
-  host: string;
-  frame: RainViewerFrame | null;
-  timeline: RainViewerFrame[];
-} | null = null;
+const HOP_BY_HOP_HEADERS = new Set([
+  "connection",
+  "keep-alive",
+  "proxy-authenticate",
+  "proxy-authorization",
+  "te",
+  "trailer",
+  "transfer-encoding",
+  "upgrade"
+]);
 
 type OceanTileSource = "sst" | "chlorophyll" | "currents";
 
@@ -114,9 +50,6 @@ type OceanBuoyObservation = {
   pressureHpa: number | null;
 };
 
-const oceanCurrentVectorCache = new Map<string, { expiresAt: number; vectors: OceanCurrentVector[]; source: string }>();
-let lastOceanCurrentVectorSnapshot: { vectors: OceanCurrentVector[]; source: string; generatedAt: number } | null = null;
-let oceanCurrentRateLimitedUntil = 0;
 type FishingAdvisorZone = {
   id: string;
   label: string;
@@ -263,683 +196,6 @@ function setMetricValue(summary: { metrics: Array<{ label: string; value: string
   metric.unit = unit;
 }
 
-function toFiniteNumber(value: unknown): number | null {
-  if (typeof value === "number" && Number.isFinite(value)) {
-    return value;
-  }
-
-  if (typeof value === "string") {
-    const parsed = Number.parseFloat(value);
-    if (Number.isFinite(parsed)) {
-      return parsed;
-    }
-  }
-
-  return null;
-}
-
-function resolveWeatherReferencePoint(nmeaTelemetry: { latitude: number | null; longitude: number | null } | null) {
-  if (typeof nmeaTelemetry?.latitude === "number" && typeof nmeaTelemetry?.longitude === "number") {
-    return {
-      latitude: nmeaTelemetry.latitude,
-      longitude: nmeaTelemetry.longitude,
-      source: "nmea"
-    };
-  }
-
-  if (Number.isFinite(DEFAULT_HOME_LAT) && Number.isFinite(DEFAULT_HOME_LON)) {
-    return {
-      latitude: DEFAULT_HOME_LAT,
-      longitude: DEFAULT_HOME_LON,
-      source: "home-port"
-    };
-  }
-
-  return null;
-}
-
-function pickNearestIndex(times: string[], targetMs: number) {
-  if (!Array.isArray(times) || times.length === 0) {
-    return -1;
-  }
-
-  let bestIndex = 0;
-  let bestDistance = Number.POSITIVE_INFINITY;
-
-  for (let index = 0; index < times.length; index += 1) {
-    const value = times[index];
-    if (!value) {
-      continue;
-    }
-
-    const ms = Date.parse(value);
-    if (!Number.isFinite(ms)) {
-      continue;
-    }
-
-    const distance = Math.abs(ms - targetMs);
-    if (distance < bestDistance) {
-      bestDistance = distance;
-      bestIndex = index;
-    }
-  }
-
-  return bestDistance === Number.POSITIVE_INFINITY ? -1 : bestIndex;
-}
-
-function summarizeMarineOutlook(windKnots: number, waveFeet: number) {
-  if (waveFeet >= 6.5 || windKnots >= 24) {
-    return "Hazardous run window";
-  }
-
-  if (waveFeet >= 4.5 || windKnots >= 18) {
-    return "Bumpy offshore legs";
-  }
-
-  if (waveFeet <= 2.5 && windKnots <= 12) {
-    return "Clean travel window";
-  }
-
-  return "Stable marine run";
-}
-
-function formatTideLabel(tideFeet: number, trend: "rising" | "falling" | "steady" | null) {
-  const sign = tideFeet >= 0 ? "+" : "";
-  const trendLabel = trend ?? "steady";
-  return `${sign}${tideFeet.toFixed(1)} ft ${trendLabel}`;
-}
-
-async function loadExternalMarineWeather(latitude: number, longitude: number) {
-  const lat = clampNumber(latitude, -89.5, 89.5);
-  const lon = clampNumber(longitude, -179.9, 179.9);
-  const cacheKey = `${lat.toFixed(2)}:${lon.toFixed(2)}`;
-  const now = Date.now();
-
-  if (externalMarineWeatherCache && externalMarineWeatherCache.expiresAt > now && externalMarineWeatherCache.key === cacheKey) {
-    return externalMarineWeatherCache.data;
-  }
-
-  const weatherParams = new URLSearchParams({
-    latitude: lat.toFixed(4),
-    longitude: lon.toFixed(4),
-    current: "wind_speed_10m,pressure_msl",
-    hourly: "wind_speed_10m,pressure_msl",
-    wind_speed_unit: "kn",
-    timezone: "UTC",
-    forecast_days: "2"
-  });
-
-  const marineParams = new URLSearchParams({
-    latitude: lat.toFixed(4),
-    longitude: lon.toFixed(4),
-    current: "sea_surface_temperature,wave_height,sea_level_height_msl",
-    hourly: "wave_height,sea_level_height_msl,sea_surface_temperature",
-    timezone: "UTC",
-    forecast_days: "2"
-  });
-
-  const [weatherResponse, marineResponse] = await Promise.all([
-    fetch(`https://api.open-meteo.com/v1/forecast?${weatherParams.toString()}`, {
-      headers: {
-        "User-Agent": "Palmer-Lou-OS/1.0 (+weather-summary)"
-      },
-      signal: AbortSignal.timeout(WEATHER_FETCH_TIMEOUT_MS)
-    }),
-    fetch(`https://marine-api.open-meteo.com/v1/marine?${marineParams.toString()}`, {
-      headers: {
-        "User-Agent": "Palmer-Lou-OS/1.0 (+marine-summary)"
-      },
-      signal: AbortSignal.timeout(WEATHER_FETCH_TIMEOUT_MS)
-    })
-  ]);
-
-  if (!weatherResponse.ok || !marineResponse.ok) {
-    throw new Error(`Open-Meteo weather unavailable (${weatherResponse.status}/${marineResponse.status})`);
-  }
-
-  const weatherPayload = await weatherResponse.json() as {
-    current?: { time?: string; wind_speed_10m?: number; pressure_msl?: number };
-    hourly?: { time?: string[]; wind_speed_10m?: number[]; pressure_msl?: number[] };
-  };
-  const marinePayload = await marineResponse.json() as {
-    current?: { time?: string; sea_surface_temperature?: number; wave_height?: number; sea_level_height_msl?: number };
-    hourly?: { time?: string[]; wave_height?: number[]; sea_level_height_msl?: number[]; sea_surface_temperature?: number[] };
-  };
-
-  const currentWindKnots = toFiniteNumber(weatherPayload.current?.wind_speed_10m);
-  const currentBarometer = toFiniteNumber(weatherPayload.current?.pressure_msl);
-  const currentWaterTempC = toFiniteNumber(marinePayload.current?.sea_surface_temperature);
-  const currentTideMeters = toFiniteNumber(marinePayload.current?.sea_level_height_msl);
-  const hourlyTimes = Array.isArray(weatherPayload.hourly?.time) ? weatherPayload.hourly.time : [];
-  const hourlyWindKnots = Array.isArray(weatherPayload.hourly?.wind_speed_10m) ? weatherPayload.hourly.wind_speed_10m : [];
-  const hourlyWaveM = Array.isArray(marinePayload.hourly?.wave_height) ? marinePayload.hourly.wave_height : [];
-  const hourlySeaLevelM = Array.isArray(marinePayload.hourly?.sea_level_height_msl) ? marinePayload.hourly.sea_level_height_msl : [];
-  const referenceNow = Date.now();
-  const tideIndex = pickNearestIndex(hourlyTimes, referenceNow);
-  const nextTideIndex = tideIndex >= 0 ? Math.min(hourlySeaLevelM.length - 1, tideIndex + 1) : -1;
-
-  const tideNowMeters = tideIndex >= 0 ? toFiniteNumber(hourlySeaLevelM[tideIndex] ?? null) ?? currentTideMeters : currentTideMeters;
-  const tideNextMeters = nextTideIndex >= 0 ? toFiniteNumber(hourlySeaLevelM[nextTideIndex] ?? null) : null;
-
-  let tideTrend: "rising" | "falling" | "steady" | null = null;
-  if (tideNowMeters !== null && tideNextMeters !== null) {
-    const delta = tideNextMeters - tideNowMeters;
-    if (delta > 0.02) {
-      tideTrend = "rising";
-    } else if (delta < -0.02) {
-      tideTrend = "falling";
-    } else {
-      tideTrend = "steady";
-    }
-  }
-
-  const offsets = [
-    { label: "Now", hours: 0 },
-    { label: "+6h", hours: 6 },
-    { label: "+12h", hours: 12 }
-  ];
-
-  const cards = offsets.map((offset) => {
-    const targetMs = referenceNow + (offset.hours * 60 * 60 * 1000);
-    const index = pickNearestIndex(hourlyTimes, targetMs);
-    const wind = index >= 0 ? toFiniteNumber(hourlyWindKnots[index] ?? null) : null;
-    const waveM = index >= 0 ? toFiniteNumber(hourlyWaveM[index] ?? null) : null;
-    const observedAt = index >= 0 ? hourlyTimes[index] ?? null : null;
-    const windKnots = Math.max(0, wind ?? currentWindKnots ?? 0);
-    const waveFeet = Math.max(0.5, (waveM ?? toFiniteNumber(marinePayload.current?.wave_height) ?? 0.5) * 3.28084);
-
-    return {
-      label: offset.label,
-      windKnots,
-      waveFeet,
-      outlook: summarizeMarineOutlook(windKnots, waveFeet),
-      observedAt
-    };
-  });
-
-  const result = {
-    windKnots: currentWindKnots,
-    barometerHpa: currentBarometer,
-    waterTempF: currentWaterTempC === null ? null : ((currentWaterTempC * 9) / 5) + 32,
-    tideFeet: tideNowMeters === null ? null : tideNowMeters * 3.28084,
-    tideTrend,
-    source: "Open-Meteo marine/weather",
-    cards
-  };
-
-  externalMarineWeatherCache = {
-    key: cacheKey,
-    expiresAt: now + EXTERNAL_WEATHER_CACHE_TTL_MS,
-    data: result
-  };
-
-  return result;
-}
-
-function clampNumber(value: number, min: number, max: number) {
-  return Math.max(min, Math.min(max, value));
-}
-
-function normalizeHomePortConfig(input: unknown): HomePortConfig {
-  const candidate = input && typeof input === "object"
-    ? input as { latitude?: unknown; longitude?: unknown; radiusNm?: unknown; updatedAt?: unknown }
-    : {};
-
-  const latitude = typeof candidate.latitude === "number" && Number.isFinite(candidate.latitude)
-    ? clampNumber(candidate.latitude, -89.9, 89.9)
-    : null;
-  const longitude = typeof candidate.longitude === "number" && Number.isFinite(candidate.longitude)
-    ? clampNumber(candidate.longitude, -180, 180)
-    : null;
-  const radiusRaw = typeof candidate.radiusNm === "number" && Number.isFinite(candidate.radiusNm)
-    ? candidate.radiusNm
-    : 0.15;
-  const radiusNm = clampNumber(radiusRaw, 0.05, 2.5);
-
-  const updatedAtValue = typeof candidate.updatedAt === "string" && Number.isFinite(Date.parse(candidate.updatedAt))
-    ? new Date(candidate.updatedAt).toISOString()
-    : new Date().toISOString();
-
-  return {
-    latitude,
-    longitude,
-    radiusNm,
-    updatedAt: updatedAtValue
-  };
-}
-
-function readHomePortConfig(): HomePortConfig {
-  if (!existsSync(homePortConfigPath)) {
-    return normalizeHomePortConfig({});
-  }
-
-  try {
-    const raw = readFileSync(homePortConfigPath, "utf-8");
-    const parsed = JSON.parse(raw) as unknown;
-    return normalizeHomePortConfig(parsed);
-  } catch {
-    return normalizeHomePortConfig({});
-  }
-}
-
-function writeHomePortConfig(nextConfig: unknown): HomePortConfig {
-  const normalized = normalizeHomePortConfig(nextConfig);
-  const withTimestamp: HomePortConfig = {
-    ...normalized,
-    updatedAt: new Date().toISOString()
-  };
-
-  mkdirSync(stateDir, { recursive: true });
-  writeFileSync(homePortConfigPath, `${JSON.stringify(withTimestamp, null, 2)}\n`, "utf-8");
-  return withTimestamp;
-}
-
-function parseOceanBounds(url: URL) {
-  const rawMinLat = Number.parseFloat(url.searchParams.get("minLat") ?? "-90");
-  const rawMaxLat = Number.parseFloat(url.searchParams.get("maxLat") ?? "90");
-  const rawMinLng = Number.parseFloat(url.searchParams.get("minLng") ?? "-180");
-  const rawMaxLng = Number.parseFloat(url.searchParams.get("maxLng") ?? "180");
-
-  const minLat = Number.isFinite(rawMinLat) ? clampNumber(rawMinLat, -89.9, 89.9) : -89.9;
-  const maxLat = Number.isFinite(rawMaxLat) ? clampNumber(rawMaxLat, -89.9, 89.9) : 89.9;
-  const minLng = Number.isFinite(rawMinLng) ? clampNumber(rawMinLng, -180, 180) : -180;
-  const maxLng = Number.isFinite(rawMaxLng) ? clampNumber(rawMaxLng, -180, 180) : 180;
-
-  return {
-    minLat: Math.min(minLat, maxLat),
-    maxLat: Math.max(minLat, maxLat),
-    minLng: Math.min(minLng, maxLng),
-    maxLng: Math.max(minLng, maxLng)
-  };
-}
-
-function buildOceanCurrentSampleGrid(bounds: { minLat: number; maxLat: number; minLng: number; maxLng: number }, maxPoints: number) {
-  const latSpan = Math.max(0.2, bounds.maxLat - bounds.minLat);
-  const lngSpan = Math.max(0.2, bounds.maxLng - bounds.minLng);
-  const aspect = clampNumber(lngSpan / latSpan, 0.6, 2.8);
-
-  let rows = Math.max(3, Math.round(Math.sqrt(maxPoints / aspect)));
-  let cols = Math.max(3, Math.round(rows * aspect));
-
-  while ((rows * cols) > maxPoints && rows > 3) {
-    rows -= 1;
-    cols = Math.max(3, Math.round(rows * aspect));
-  }
-
-  while ((rows * cols) > maxPoints && cols > 3) {
-    cols -= 1;
-  }
-
-  const points: Array<{ latitude: number; longitude: number }> = [];
-  for (let r = 0; r < rows; r += 1) {
-    const latitude = bounds.minLat + ((r + 0.5) / rows) * (bounds.maxLat - bounds.minLat);
-    for (let c = 0; c < cols; c += 1) {
-      const longitude = bounds.minLng + ((c + 0.5) / cols) * (bounds.maxLng - bounds.minLng);
-      points.push({ latitude, longitude });
-    }
-  }
-
-  return points;
-}
-
-function quantizeBound(value: number, step: number, mode: "floor" | "ceil") {
-  if (mode === "floor") {
-    return Math.floor(value / step) * step;
-  }
-  return Math.ceil(value / step) * step;
-}
-
-function vectorsInBounds(vectors: OceanCurrentVector[], bounds: { minLat: number; maxLat: number; minLng: number; maxLng: number }) {
-  return vectors.filter((vector) => {
-    return vector.latitude >= bounds.minLat
-      && vector.latitude <= bounds.maxLat
-      && vector.longitude >= bounds.minLng
-      && vector.longitude <= bounds.maxLng;
-  });
-}
-
-async function loadErddapCurrentVectors(bounds: { minLat: number; maxLat: number; minLng: number; maxLng: number }, limit: number) {
-  const wrapLon = (lon: number) => {
-    const normalized = ((lon % 360) + 360) % 360;
-    return normalized;
-  };
-
-  const minLon360 = wrapLon(bounds.minLng);
-  const maxLon360 = wrapLon(bounds.maxLng);
-  const crossesDateLine = minLon360 > maxLon360;
-
-  const latSpan = Math.max(0.1, bounds.maxLat - bounds.minLat);
-  const lonSpan = Math.max(0.1, crossesDateLine ? (360 - minLon360 + maxLon360) : (maxLon360 - minLon360));
-  const coarseResolutionDeg = 0.02;
-  const targetRows = Math.max(4, Math.round(Math.sqrt(limit / Math.max(0.5, lonSpan / latSpan))));
-  const targetCols = Math.max(4, Math.round(limit / targetRows));
-  const latStride = Math.max(1, Math.round((latSpan / coarseResolutionDeg) / targetRows));
-  const lonStride = Math.max(1, Math.round((lonSpan / coarseResolutionDeg) / targetCols));
-
-  const datasetId = "ucsdHfrE2_Lon0360";
-  const lonStart = crossesDateLine ? minLon360 : Math.min(minLon360, maxLon360);
-  const lonEnd = crossesDateLine ? (maxLon360 + 360) : Math.max(minLon360, maxLon360);
-
-  const query = `water_u[(last)][(${bounds.minLat.toFixed(4)}):${latStride}:(${bounds.maxLat.toFixed(4)})][(${lonStart.toFixed(4)}):${lonStride}:(${lonEnd.toFixed(4)})],water_v[(last)][(${bounds.minLat.toFixed(4)}):${latStride}:(${bounds.maxLat.toFixed(4)})][(${lonStart.toFixed(4)}):${lonStride}:(${lonEnd.toFixed(4)})]`;
-  const url = `https://coastwatch.pfeg.noaa.gov/erddap/griddap/${datasetId}.csv?${encodeURIComponent(query)}`;
-
-  const response = await fetch(url, {
-    headers: {
-      "User-Agent": "Palmer-Lou-OS/1.0 (+ocean-current-vectors-erddap)"
-    },
-    signal: AbortSignal.timeout(18000)
-  });
-
-  if (!response.ok) {
-    throw new Error(`ERDDAP response ${response.status}`);
-  }
-
-  const csv = await response.text();
-  const lines = csv.split(/\r?\n/).slice(2).filter((line) => line.trim().length > 0);
-
-  const vectors = lines
-    .map((line) => {
-      const parts = line.split(",");
-      if (parts.length < 5) {
-        return null;
-      }
-
-      const observedAt = parts[0]?.trim();
-      const latitude = Number.parseFloat(parts[1] ?? "NaN");
-      const longitudeRaw = Number.parseFloat(parts[2] ?? "NaN");
-      const u = Number.parseFloat(parts[3] ?? "NaN");
-      const v = Number.parseFloat(parts[4] ?? "NaN");
-
-      if (!Number.isFinite(latitude) || !Number.isFinite(longitudeRaw) || !Number.isFinite(u) || !Number.isFinite(v)) {
-        return null;
-      }
-
-      const longitude = longitudeRaw > 180 ? longitudeRaw - 360 : longitudeRaw;
-      const speedMps = Math.hypot(u, v);
-      const speedKnots = speedMps * 1.94384;
-      const directionDegrees = ((Math.atan2(u, v) * 180 / Math.PI) + 360) % 360;
-
-      return {
-        latitude,
-        longitude,
-        speedKmh: speedMps * 3.6,
-        speedKnots,
-        directionDegrees,
-        observedAt: observedAt && observedAt.length > 0 ? observedAt : new Date().toISOString()
-      } as OceanCurrentVector;
-    })
-    .filter((vector): vector is OceanCurrentVector => vector !== null)
-    .filter((vector) => vector.latitude >= bounds.minLat && vector.latitude <= bounds.maxLat && vector.longitude >= bounds.minLng && vector.longitude <= bounds.maxLng);
-
-  if (vectors.length <= limit) {
-    return vectors;
-  }
-
-  const stride = Math.ceil(vectors.length / limit);
-  return vectors.filter((_, index) => index % stride === 0);
-}
-
-async function loadOscarClimatologyVectors(bounds: { minLat: number; maxLat: number; minLng: number; maxLng: number }, limit: number) {
-  const toLon360 = (lon: number) => ((lon % 360) + 360) % 360;
-  const minLat = Math.max(-79.5, bounds.minLat - 0.8);
-  const maxLat = Math.min(79.5, bounds.maxLat + 0.8);
-  const minLon = toLon360(bounds.minLng - 0.8);
-  const maxLon = toLon360(bounds.maxLng + 0.8);
-
-  const latSpan = Math.max(0.2, maxLat - minLat);
-  const lonSpanRaw = maxLon >= minLon ? (maxLon - minLon) : (360 - minLon + maxLon);
-  const lonSpan = Math.max(0.2, lonSpanRaw);
-  const targetRows = Math.max(4, Math.round(Math.sqrt(limit / Math.max(0.5, lonSpan / latSpan))));
-  const targetCols = Math.max(4, Math.round(limit / targetRows));
-  const gridStepDeg = 0.3333333333333333;
-  const latStride = Math.max(1, Math.round((latSpan / gridStepDeg) / targetRows));
-  const lonStride = Math.max(1, Math.round((lonSpan / gridStepDeg) / targetCols));
-
-  const lonEnd = maxLon >= minLon ? maxLon : (maxLon + 360);
-  const query = `u[(last)][(15.0)][(${minLat.toFixed(4)}):${latStride}:(${maxLat.toFixed(4)})][(${minLon.toFixed(4)}):${lonStride}:(${lonEnd.toFixed(4)})],v[(last)][(15.0)][(${minLat.toFixed(4)}):${latStride}:(${maxLat.toFixed(4)})][(${minLon.toFixed(4)}):${lonStride}:(${lonEnd.toFixed(4)})]`;
-  const url = `https://coastwatch.pfeg.noaa.gov/erddap/griddap/jplOscar.csv?${encodeURIComponent(query)}`;
-
-  const response = await fetch(url, {
-    headers: {
-      "User-Agent": "Palmer-Lou-OS/1.0 (+ocean-current-vectors-oscar)"
-    },
-    signal: AbortSignal.timeout(18000)
-  });
-
-  if (!response.ok) {
-    throw new Error(`OSCAR ERDDAP response ${response.status}`);
-  }
-
-  const csv = await response.text();
-  const lines = csv.split(/\r?\n/).slice(2).filter((line) => line.trim().length > 0);
-
-  const vectors = lines
-    .map((line) => {
-      const parts = line.split(",");
-      if (parts.length < 6) {
-        return null;
-      }
-
-      const observedAt = parts[0]?.trim();
-      const latitude = Number.parseFloat(parts[2] ?? "NaN");
-      const longitudeRaw = Number.parseFloat(parts[3] ?? "NaN");
-      const u = Number.parseFloat(parts[4] ?? "NaN");
-      const v = Number.parseFloat(parts[5] ?? "NaN");
-      if (!Number.isFinite(latitude) || !Number.isFinite(longitudeRaw) || !Number.isFinite(u) || !Number.isFinite(v)) {
-        return null;
-      }
-
-      const longitudeNorm = longitudeRaw > 180 ? longitudeRaw - 360 : longitudeRaw;
-      const speedMps = Math.hypot(u, v);
-      const speedKnots = speedMps * 1.94384;
-      const directionDegrees = ((Math.atan2(u, v) * 180 / Math.PI) + 360) % 360;
-
-      return {
-        latitude,
-        longitude: longitudeNorm,
-        speedKmh: speedMps * 3.6,
-        speedKnots,
-        directionDegrees,
-        observedAt: observedAt && observedAt.length > 0 ? observedAt : new Date().toISOString()
-      } as OceanCurrentVector;
-    })
-    .filter((vector): vector is OceanCurrentVector => vector !== null);
-
-  const inBounds = vectors.filter((vector) => {
-    return vector.latitude >= bounds.minLat
-      && vector.latitude <= bounds.maxLat
-      && vector.longitude >= bounds.minLng
-      && vector.longitude <= bounds.maxLng;
-  });
-
-  const selected = inBounds.length > 0 ? inBounds : vectors;
-  if (selected.length <= limit) {
-    return selected;
-  }
-
-  const stride = Math.ceil(selected.length / limit);
-  return selected.filter((_, index) => index % stride === 0);
-}
-
-async function loadOceanCurrentVectors(bounds: { minLat: number; maxLat: number; minLng: number; maxLng: number }, limit: number) {
-  const maxPoints = clampNumber(limit, 12, 180);
-  const cacheStep = 0.35;
-  const normalizedBounds = {
-    minLat: quantizeBound(bounds.minLat, cacheStep, "floor"),
-    maxLat: quantizeBound(bounds.maxLat, cacheStep, "ceil"),
-    minLng: quantizeBound(bounds.minLng, cacheStep, "floor"),
-    maxLng: quantizeBound(bounds.maxLng, cacheStep, "ceil")
-  };
-  const cacheKey = [
-    normalizedBounds.minLat.toFixed(2),
-    normalizedBounds.maxLat.toFixed(2),
-    normalizedBounds.minLng.toFixed(2),
-    normalizedBounds.maxLng.toFixed(2),
-    String(maxPoints)
-  ].join(":");
-
-  const now = Date.now();
-  const cached = oceanCurrentVectorCache.get(cacheKey);
-  if (cached && cached.expiresAt > now) {
-    return cached;
-  }
-
-  if (now < oceanCurrentRateLimitedUntil && lastOceanCurrentVectorSnapshot && lastOceanCurrentVectorSnapshot.vectors.length > 0) {
-    const staleSubset = vectorsInBounds(lastOceanCurrentVectorSnapshot.vectors, normalizedBounds);
-    return {
-      expiresAt: now + OCEAN_CURRENT_VECTOR_CACHE_TTL_MS,
-      vectors: staleSubset.length > 0 ? staleSubset : lastOceanCurrentVectorSnapshot.vectors,
-      source: `${lastOceanCurrentVectorSnapshot.source} (cached fallback)`
-    };
-  }
-
-  const samplePoints = buildOceanCurrentSampleGrid(normalizedBounds, maxPoints);
-  if (samplePoints.length === 0) {
-    return {
-      expiresAt: now + OCEAN_CURRENT_VECTOR_CACHE_TTL_MS,
-      vectors: [] as OceanCurrentVector[],
-      source: "Open-Meteo Marine"
-    };
-  }
-
-  const vectors: OceanCurrentVector[] = [];
-  const batchSize = 24;
-  let batchFailures = 0;
-
-  for (let start = 0; start < samplePoints.length; start += batchSize) {
-    const batch = samplePoints.slice(start, start + batchSize);
-    const params = new URLSearchParams({
-      latitude: batch.map((point) => point.latitude.toFixed(4)).join(","),
-      longitude: batch.map((point) => point.longitude.toFixed(4)).join(","),
-      current: "ocean_current_velocity,ocean_current_direction",
-      timezone: "UTC",
-      forecast_days: "1"
-    });
-
-    try {
-      const response = await fetch(`https://marine-api.open-meteo.com/v1/marine?${params.toString()}`, {
-        headers: {
-          "User-Agent": "Palmer-Lou-OS/1.0 (+ocean-current-vectors)"
-        },
-        signal: AbortSignal.timeout(12000)
-      });
-
-      if (!response.ok) {
-        if (response.status === 429) {
-          oceanCurrentRateLimitedUntil = Date.now() + OCEAN_CURRENT_RATE_LIMIT_COOLDOWN_MS;
-        }
-        batchFailures += 1;
-        continue;
-      }
-
-      const payload = await response.json() as unknown;
-      const records = Array.isArray(payload) ? payload : [payload];
-
-      records.forEach((record, batchIndex) => {
-        const item = record as {
-          latitude?: number;
-          longitude?: number;
-          current?: {
-            time?: string;
-            ocean_current_velocity?: number;
-            ocean_current_direction?: number;
-          };
-        };
-        const fallbackPoint = batch[batchIndex] ?? batch[batch.length - 1];
-        const latitude = Number.isFinite(item.latitude) ? item.latitude as number : (fallbackPoint?.latitude ?? 0);
-        const longitude = Number.isFinite(item.longitude) ? item.longitude as number : (fallbackPoint?.longitude ?? 0);
-        const speedKmh = item.current?.ocean_current_velocity;
-        const directionDegrees = item.current?.ocean_current_direction;
-        const observedAt = item.current?.time;
-
-        if (!Number.isFinite(speedKmh) || !Number.isFinite(directionDegrees)) {
-          return;
-        }
-
-        const speedValueKmh = Math.max(0, speedKmh as number);
-        vectors.push({
-          latitude,
-          longitude,
-          speedKmh: speedValueKmh,
-          speedKnots: speedValueKmh * 0.539957,
-          directionDegrees: (((directionDegrees as number) % 360) + 360) % 360,
-          observedAt: typeof observedAt === "string" ? observedAt : new Date().toISOString()
-        });
-      });
-    } catch {
-      batchFailures += 1;
-      continue;
-    }
-  }
-
-  if (vectors.length === 0 && batchFailures > 0) {
-    try {
-      const erddapVectors = await loadErddapCurrentVectors(normalizedBounds, maxPoints);
-      if (erddapVectors.length > 0) {
-        lastOceanCurrentVectorSnapshot = {
-          vectors: erddapVectors,
-          source: "NOAA HF Radar (ERDDAP E2)",
-          generatedAt: now
-        };
-
-        return {
-          expiresAt: now + OCEAN_CURRENT_VECTOR_CACHE_TTL_MS,
-          vectors: erddapVectors,
-          source: "NOAA HF Radar (ERDDAP E2)"
-        };
-      }
-    } catch {
-      // Fall back to stale snapshots below if ERDDAP is unavailable.
-    }
-
-    try {
-      const oscarVectors = await loadOscarClimatologyVectors(normalizedBounds, maxPoints);
-      if (oscarVectors.length > 0) {
-        lastOceanCurrentVectorSnapshot = {
-          vectors: oscarVectors,
-          source: "OSCAR historical vectors (ERDDAP)",
-          generatedAt: now
-        };
-
-        return {
-          expiresAt: now + OCEAN_CURRENT_VECTOR_CACHE_TTL_MS,
-          vectors: oscarVectors,
-          source: "OSCAR historical vectors (ERDDAP)"
-        };
-      }
-    } catch {
-      // Fall back to stale snapshots below.
-    }
-
-    if (lastOceanCurrentVectorSnapshot && lastOceanCurrentVectorSnapshot.vectors.length > 0) {
-      const staleSubset = vectorsInBounds(lastOceanCurrentVectorSnapshot.vectors, normalizedBounds);
-      return {
-        expiresAt: now + OCEAN_CURRENT_VECTOR_CACHE_TTL_MS,
-        vectors: staleSubset.length > 0 ? staleSubset : lastOceanCurrentVectorSnapshot.vectors,
-        source: `${lastOceanCurrentVectorSnapshot.source} (stale fallback)`
-      };
-    }
-
-    throw new Error("Open-Meteo marine vector sampling failed for all batches");
-  }
-
-  if (vectors.length > 0) {
-    lastOceanCurrentVectorSnapshot = {
-      vectors,
-      source: "Open-Meteo Marine",
-      generatedAt: now
-    };
-    oceanCurrentRateLimitedUntil = 0;
-  }
-
-  const result = {
-    expiresAt: now + OCEAN_CURRENT_VECTOR_CACHE_TTL_MS,
-    vectors,
-    source: "Open-Meteo Marine"
-  };
-  oceanCurrentVectorCache.set(cacheKey, result);
-  return result;
-}
 function normalizeOceanOverlayDate(value: string | null) {
   if (!value) {
     return new Date(Date.now() - (24 * 60 * 60 * 1000)).toISOString().slice(0, 10);
@@ -995,99 +251,6 @@ function pruneOceanTileCache() {
 
     oceanTileCache.delete(key);
   }
-}
-
-function pruneStormRadarTileCache() {
-  const now = Date.now();
-
-  for (const [key, entry] of stormRadarTileCache.entries()) {
-    if (entry.expiresAt <= now) {
-      stormRadarTileCache.delete(key);
-    }
-  }
-
-  if (stormRadarTileCache.size <= STORM_RADAR_TILE_CACHE_LIMIT) {
-    return;
-  }
-
-  const overage = stormRadarTileCache.size - STORM_RADAR_TILE_CACHE_LIMIT;
-  const keys = stormRadarTileCache.keys();
-  for (let index = 0; index < overage; index += 1) {
-    const key = keys.next().value;
-    if (!key) {
-      break;
-    }
-
-    stormRadarTileCache.delete(key);
-  }
-}
-
-async function loadStormRadarFrame() {
-  const now = Date.now();
-  if (stormRadarFrameCache && (now - stormRadarFrameCache.fetchedAt) < STORM_RADAR_FRAME_TTL_MS) {
-    return stormRadarFrameCache;
-  }
-
-  const response = await fetch("https://api.rainviewer.com/public/weather-maps.json", {
-    headers: {
-      "User-Agent": "Palmer-Lou-OS/1.0 (+storm-radar-proxy)"
-    },
-    signal: AbortSignal.timeout(12000)
-  });
-
-  if (!response.ok) {
-    throw new Error(`Radar metadata unavailable (${response.status})`);
-  }
-
-  const payload = await response.json() as {
-    host?: string;
-    radar?: {
-      past?: Array<{ path?: string; time?: number }>;
-      nowcast?: Array<{ path?: string; time?: number }>;
-      future?: Array<{ path?: string; time?: number }>;
-    };
-  };
-
-  const hostRaw = (payload.host ?? "https://tilecache.rainviewer.com").trim();
-  const host = hostRaw.length > 0 ? hostRaw.replace(/\/$/, "") : "https://tilecache.rainviewer.com";
-  const toFrames = (
-    sourceFrames: Array<{ path?: string; time?: number }>,
-    kind: "past" | "nowcast" | "future"
-  ): RainViewerFrame[] => sourceFrames
-    .filter((frame): frame is { path: string; time?: number } => typeof frame.path === "string" && frame.path.length > 0)
-    .map((frame) => ({
-      path: frame.path,
-      time: typeof frame.time === "number" ? frame.time : null,
-      kind
-    }));
-
-  const pastFrames = toFrames(payload.radar?.past ?? [], "past");
-  const nowcastFrames = toFrames(payload.radar?.nowcast ?? [], "nowcast");
-  const futureFrames = toFrames(payload.radar?.future ?? [], "future");
-  const observedLatest = pastFrames.at(-1) ?? null;
-  const projectedFrames = (nowcastFrames.length > 0 ? nowcastFrames : futureFrames).slice(0, 4);
-
-  const timeline = [...pastFrames.slice(-8), ...projectedFrames]
-    .sort((a, b) => (a.time ?? 0) - (b.time ?? 0))
-    .filter((frame, index, list) => index === 0 || frame.path !== list[index - 1]?.path)
-    .slice(-12);
-
-  const latest = observedLatest ?? timeline.at(-1) ?? null;
-
-  stormRadarFrameCache = {
-    fetchedAt: now,
-    host,
-    frame: latest,
-    timeline
-  };
-
-  return stormRadarFrameCache;
-}
-
-function buildStormRadarTileUrl(host: string, framePath: string, z: number, x: number, y: number) {
-  const safePath = framePath.startsWith("/") ? framePath : `/${framePath}`;
-  const normalizedPath = safePath.replace(/\/$/, "");
-  return `${host}${normalizedPath}/256/${z}/${x}/${y}/2/1_1.png`;
 }
 
 function parseNumericToken(token: string | undefined): number | null {
@@ -1174,9 +337,6 @@ const SPECIES_INTEL_PROFILES = [
     name: "Wahoo",
     tempMin: 72, tempMax: 84, optimalTemp: 78,
     sstWeight: 1.25, convWeight: 0.75,
-    minOffshoreNm: 30,
-    targetOffshoreNm: 46,
-    maxOffshoreNm: 130,
     color: "#ff5b8a",
     depthBand: "140–600 ft contour edge",
     currentSignal: "Fast current lane and bait stacking"
@@ -1185,9 +345,6 @@ const SPECIES_INTEL_PROFILES = [
     name: "Mahi Mahi",
     tempMin: 74, tempMax: 86, optimalTemp: 80,
     sstWeight: 0.9, convWeight: 1.1,
-    minOffshoreNm: 16,
-    targetOffshoreNm: 30,
-    maxOffshoreNm: 110,
     color: "#6ad8a2",
     depthBand: "Surface to 200 ft over structure",
     currentSignal: "Surface slick with debris and convergence"
@@ -1196,9 +353,6 @@ const SPECIES_INTEL_PROFILES = [
     name: "Tuna",
     tempMin: 70, tempMax: 80, optimalTemp: 75,
     sstWeight: 1.05, convWeight: 0.95,
-    minOffshoreNm: 22,
-    targetOffshoreNm: 38,
-    maxOffshoreNm: 140,
     color: "#00c0c0",
     depthBand: "120–600 ft temp break",
     currentSignal: "Cross-current seam with stable break"
@@ -1207,9 +361,6 @@ const SPECIES_INTEL_PROFILES = [
     name: "Billfish",
     tempMin: 74, tempMax: 84, optimalTemp: 79,
     sstWeight: 0.85, convWeight: 1.15,
-    minOffshoreNm: 30,
-    targetOffshoreNm: 54,
-    maxOffshoreNm: 180,
     color: "#b58dff",
     depthBand: "200–1000+ ft canyon edge",
     currentSignal: "Warm current push with pronounced seam"
@@ -1218,9 +369,6 @@ const SPECIES_INTEL_PROFILES = [
     name: "Swordfish",
     tempMin: 65, tempMax: 78, optimalTemp: 71,
     sstWeight: 0.8, convWeight: 1.2,
-    minOffshoreNm: 32,
-    targetOffshoreNm: 58,
-    maxOffshoreNm: 190,
     color: "#f0c96b",
     depthBand: "300–1200 ft outside edge",
     currentSignal: "Offshore break and eddy shoulder"
@@ -1229,9 +377,6 @@ const SPECIES_INTEL_PROFILES = [
     name: "Kingfish",
     tempMin: 68, tempMax: 82, optimalTemp: 75,
     sstWeight: 1.15, convWeight: 0.85,
-    minOffshoreNm: 8,
-    targetOffshoreNm: 18,
-    maxOffshoreNm: 65,
     color: "#ff8f70",
     depthBand: "100–400 ft shelf break",
     currentSignal: "Current edge with bait compression"
@@ -1254,7 +399,7 @@ function buildAllSpeciesIntel(payload: {
   context: FishingAdvisorContext | null;
 }): AllSpeciesIntelResponse {
   const marineBuoys = filterBuoysToMarineRegion({ buoys: payload.buoys, context: payload.context })
-    .filter((b) => b.waterTempC !== null && !isLikelyNearshoreInvalid({ latitude: b.latitude, longitude: b.longitude }));
+    .filter((b) => b.waterTempC !== null && !isLikelyLand({ latitude: b.latitude, longitude: b.longitude }));
 
   const oceanSignals = buildBuoySignalFronts({
     buoys: marineBuoys,
@@ -1297,8 +442,7 @@ function buildAllSpeciesIntel(payload: {
         .filter((x): x is NonNullable<typeof x> => x !== null)
         .sort((a, b) => b.weightedScore - a.weightedScore)[0];
 
-      const frontProximityFit = bestFrontEntry ? Math.max(0.15, 1 - (bestFrontEntry.distance / 85)) : 0.18;
-      const frontFit = Math.min(1, (bestFrontEntry?.weightedScore ?? 0) * frontProximityFit);
+      const frontFit = Math.min(1, bestFrontEntry?.weightedScore ?? 0);
       const frontGradient = bestFrontEntry?.front.gradientFPer10Nm ?? 0;
 
       const ownWind = b.windSpeedMps ?? 0;
@@ -1308,52 +452,12 @@ function buildAllSpeciesIntel(payload: {
       const windSpread = nearbyWindValues.length > 0
         ? nearbyWindValues.reduce((s, w) => s + Math.abs(w - ownWind), 0) / nearbyWindValues.length
         : 0;
-      const convergenceFit = Math.min(1, windSpread / 3.8) * Math.min(1, sp.convWeight * 0.92);
-
-      const offshoreNm = offshoreDistanceFromAtlanticCoastNm({ latitude: b.latitude, longitude: b.longitude });
-      if (offshoreNm === null || offshoreNm < sp.minOffshoreNm) {
-        return null;
-      }
-
-      const offshoreSpan = Math.max(8, (sp.maxOffshoreNm - sp.minOffshoreNm) / 2);
-      const offshoreFit = offshoreNm > sp.maxOffshoreNm
-        ? Math.max(0.25, 1 - ((offshoreNm - sp.maxOffshoreNm) / Math.max(26, sp.maxOffshoreNm * 0.5)))
-        : Math.max(0.35, 1 - (Math.abs(offshoreNm - sp.targetOffshoreNm) / offshoreSpan) * 0.7);
-
-      const windKts = b.windSpeedMps === null ? null : b.windSpeedMps * 1.94384;
-      const windFit = windKts === null
-        ? 0.55
-        : windKts < 6
-          ? 0.45
-          : windKts <= 18
-            ? 1
-            : windKts <= 26
-              ? 0.78
-              : 0.52;
-
-      const waveFit = b.waveHeightM === null
-        ? 0.55
-        : b.waveHeightM < 0.4
-          ? 0.55
-          : b.waveHeightM <= 2.8
-            ? 1
-            : b.waveHeightM <= 4.2
-              ? 0.72
-              : 0.4;
+      const convergenceFit = Math.min(1, windSpread / 3.8) * sp.convWeight;
 
       const buoyAgeMin = (now - new Date(b.observedAt).getTime()) / 60000;
       const dataAgeFit = Math.max(0.08, 1 - buoyAgeMin / (60 * 16));
-      let raw = (sstFit * 0.31)
-        + (frontFit * 0.26)
-        + (convergenceFit * 0.13)
-        + (offshoreFit * 0.16)
-        + (waveFit * 0.07)
-        + (windFit * 0.04)
-        + (dataAgeFit * 0.03);
 
-      if (!inRange) {
-        raw -= 0.12;
-      }
+      const raw = (sstFit * 0.42) + (frontFit * 0.3) + (convergenceFit * 0.17) + (dataAgeFit * 0.11);
 
       return {
         buoy: b,
@@ -1363,17 +467,11 @@ function buildAllSpeciesIntel(payload: {
         frontGradient,
         bestFront: bestFrontEntry?.front ?? null,
         convergenceFit,
-        offshoreNm,
-        offshoreFit,
-        waveFit,
-        windFit,
         dataAgeFit,
         recentStrength,
         raw
       };
-    }).filter((candidate): candidate is NonNullable<typeof candidate> => candidate !== null)
-      .sort((a, b) => b.raw - a.raw)
-      .slice(0, 10);
+    }).sort((a, b) => b.raw - a.raw).slice(0, 10);
 
     return { sp, speciesCatches, recentStrength, candidates };
   });
@@ -1406,13 +504,13 @@ function buildAllSpeciesIntel(payload: {
             candidate.buoy.latitude,
             candidate.buoy.longitude
           )));
-        const proximityPenalty = nearestChosenNm < 140 ? (140 - nearestChosenNm) / 380 : 0;
+        const proximityPenalty = nearestChosenNm < 18 ? (18 - nearestChosenNm) / 75 : 0;
         const effectiveRaw = candidate.raw - stationPenalty - proximityPenalty;
         return { candidate, effectiveRaw };
       })
       .sort((a, b) => b.effectiveRaw - a.effectiveRaw)[0];
 
-    if (!best || best.effectiveRaw < 0.26) {
+    if (!best || best.effectiveRaw < 0.2) {
       return;
     }
 
@@ -1431,25 +529,12 @@ function buildAllSpeciesIntel(payload: {
   const spread = Math.max(0.001, maxRaw - minRaw);
 
   const entries = chosen.map((pick) => {
-    const center = enforceSpeciesOffshoreBuffer({ latitude: pick.candidate.buoy.latitude, longitude: pick.candidate.buoy.longitude }, pick.sp.name, marineBuoys);
-    const centerOffshoreNm = offshoreDistanceFromAtlanticCoastNm(center);
-    const requiredOffshoreNm = minOffshoreNmForSpecies(pick.sp.name);
+    const center = pushPointOffshore({ latitude: pick.candidate.buoy.latitude, longitude: pick.candidate.buoy.longitude }, marineBuoys);
     const normalized = (pick.effectiveRaw - minRaw) / spread;
     const historyBonus = Math.min(0.14, pick.recentStrength / 24);
     const score = Math.max(22, Math.min(97, Math.round(30 + ((normalized + historyBonus) * 64))));
-    const evidenceSignals = [
-      pick.candidate.sstFit >= 0.68,
-      pick.candidate.frontFit >= 0.44,
-      pick.candidate.convergenceFit >= 0.34,
-      pick.recentStrength >= 0.45,
-      pick.candidate.offshoreFit >= 0.6
-    ].filter(Boolean).length;
-    const recommended = score >= 56 && evidenceSignals >= 2 && (centerOffshoreNm === null || centerOffshoreNm >= requiredOffshoreNm);
-    const confidence: "high" | "medium" | "low" = recommended && score >= 78 && evidenceSignals >= 4
-      ? "high"
-      : score >= 58 && evidenceSignals >= 2
-        ? "medium"
-        : "low";
+    const confidence: "high" | "medium" | "low" = score >= 74 ? "high" : score >= 53 ? "medium" : "low";
+    const recommended = score >= 56;
 
     const frontStrength4 = pick.candidate.bestFront
       ? Math.min(4, Math.max(1, Math.round(pick.candidate.frontGradient * 2.1)))
@@ -1458,13 +543,9 @@ function buildAllSpeciesIntel(payload: {
     const convergenceLabel = pick.candidate.convergenceFit > 0.58 ? "Strong" : pick.candidate.convergenceFit > 0.34 ? "Moderate" : "Light";
     const buoyAgeMin = (now - new Date(pick.candidate.buoy.observedAt).getTime()) / 60000;
     const ageLabel = buoyAgeMin < 60 ? `${Math.round(buoyAgeMin)} min` : `${(buoyAgeMin / 60).toFixed(1)} h`;
-    const baseRadiusNm = recommended
+    const radiusNm = recommended
       ? Math.max(4, Math.min(6, 2 + score / 18))
       : 2.5;
-    const shoreSafeRadiusNm = centerOffshoreNm === null
-      ? baseRadiusNm
-      : Math.max(2.2, Math.min(baseRadiusNm, Math.max(2.2, centerOffshoreNm - (requiredOffshoreNm * 0.55))));
-    const radiusNm = Number(shoreSafeRadiusNm.toFixed(1));
 
     return {
       species: pick.sp.name,
@@ -1519,118 +600,10 @@ function buildAllSpeciesIntel(payload: {
           ? `Best front: ${pick.candidate.bestFront.label} (${pick.candidate.bestFront.strength.toUpperCase()}) - ${pick.candidate.frontGradient.toFixed(1)} F/10 NM`
           : "No SST/convergence fronts detected in local viewport",
         `SST: ${pick.candidate.tempF.toFixed(1)} F`,
-        `Sea state: ${pick.candidate.waveFit >= 0.9 ? "clean" : pick.candidate.waveFit >= 0.65 ? "workable" : "marginal"}, wind fit ${(pick.candidate.windFit * 100).toFixed(0)}%`,
-        `Convergence: ${convergenceLabel.toLowerCase()}`,
-        centerOffshoreNm !== null
-          ? `Offshore distance: ${centerOffshoreNm.toFixed(1)} NM from shoreline`
-          : "Offshore distance unavailable at this latitude",
-        `Offshore guardrail target: >= ${minOffshoreNmForSpecies(pick.sp.name)} NM from shoreline`
+        `Convergence: ${convergenceLabel.toLowerCase()}`
       ]
     } as SpeciesIntelEntry;
   }).sort((a, b) => b.score - a.score);
-
-  const existingSpecies = new Set(entries.map((entry) => entry.species.toLowerCase()));
-  speciesCandidateTable.forEach((item) => {
-    if (existingSpecies.has(item.sp.name.toLowerCase())) {
-      return;
-    }
-
-    const fallbackCandidate = item.candidates[0] ?? null;
-    const fallbackBuoy = fallbackCandidate?.buoy
-      ?? marineBuoys
-        .filter((buoy) => buoy.waterTempC !== null)
-        .map((buoy) => ({
-          buoy,
-          delta: Math.abs((toTempF(buoy.waterTempC) ?? item.sp.optimalTemp) - item.sp.optimalTemp)
-        }))
-        .sort((a, b) => a.delta - b.delta)[0]?.buoy
-      ?? null;
-
-    if (!fallbackBuoy) {
-      return;
-    }
-
-    const center = enforceSpeciesOffshoreBuffer(
-      { latitude: fallbackBuoy.latitude, longitude: fallbackBuoy.longitude },
-      item.sp.name,
-      marineBuoys
-    );
-
-    if (isLikelyNearshoreInvalid(center)) {
-      return;
-    }
-
-    const requiredOffshoreNm = minOffshoreNmForSpecies(item.sp.name);
-    const offshoreNm = offshoreDistanceFromAtlanticCoastNm(center);
-    if (offshoreNm !== null && offshoreNm < requiredOffshoreNm) {
-      return;
-    }
-
-    const fallbackTempF = toTempF(fallbackBuoy.waterTempC) ?? item.sp.optimalTemp;
-    const fallbackScore = fallbackCandidate
-      ? Math.max(28, Math.min(55, Math.round(24 + (fallbackCandidate.raw * 46))))
-      : 32;
-
-    entries.push({
-      species: item.sp.name,
-      score: fallbackScore,
-      confidence: "low",
-      recommended: false,
-      bestLatitude: center.latitude,
-      bestLongitude: center.longitude,
-      bestLocationLabel: `Scout near buoy ${fallbackBuoy.stationId}`,
-      radiusNm: 2.6,
-      temperatureRangeF: { min: item.sp.tempMin, max: item.sp.tempMax },
-      color: item.sp.color,
-      depthBand: item.sp.depthBand,
-      currentSignal: item.sp.currentSignal,
-      factors: {
-        sst: {
-          label: "Sea surface temp",
-          value: `${fallbackTempF.toFixed(1)} F (target ${item.sp.tempMin}-${item.sp.tempMax} F)`,
-          score: fallbackCandidate ? Math.round(fallbackCandidate.sstFit * 100) : 45
-        },
-        sstFront: {
-          label: "SST front strength",
-          value: fallbackCandidate?.bestFront
-            ? `${Math.max(1, Math.round(fallbackCandidate.frontGradient * 2.1))}/4 - ${fallbackCandidate.frontGradient.toFixed(1)} F / 10 NM`
-            : "Scout: no strong front lock",
-          score: fallbackCandidate ? Math.round(fallbackCandidate.frontFit * 100) : 34
-        },
-        convergence: {
-          label: "Current convergence",
-          value: fallbackCandidate
-            ? (fallbackCandidate.convergenceFit > 0.34 ? "Moderate" : "Light")
-            : "Light",
-          score: fallbackCandidate ? Math.round(Math.min(1, fallbackCandidate.convergenceFit) * 100) : 35
-        },
-        chlorophyllProxy: {
-          label: "Productivity proxy",
-          value: "Scout-grade signal",
-          score: fallbackCandidate ? Math.round((fallbackCandidate.frontFit * 0.5 + Math.min(1, fallbackCandidate.convergenceFit) * 0.5) * 100) : 36
-        },
-        dataAge: {
-          label: "Data age",
-          value: `${Math.round((now - new Date(fallbackBuoy.observedAt).getTime()) / 60000)} min`,
-          score: fallbackCandidate ? Math.round(fallbackCandidate.dataAgeFit * 100) : 78
-        },
-        catchHistory: {
-          label: "Catch history",
-          value: item.speciesCatches.length > 0 ? `${item.speciesCatches.length} logged catches` : "No history yet",
-          score: Math.min(100, Math.round(item.recentStrength * 30))
-        }
-      },
-      points: buildCirclePolygon(center.latitude, center.longitude, 2.6),
-      notes: [
-        "Scout fallback: maintaining full species coverage for tactical planning",
-        `SST: ${fallbackTempF.toFixed(1)} F`,
-        offshoreNm !== null
-          ? `Offshore distance: ${offshoreNm.toFixed(1)} NM from shoreline`
-          : "Offshore distance unavailable at this latitude",
-        `Offshore guardrail target: >= ${requiredOffshoreNm} NM from shoreline`
-      ]
-    });
-  });
 
   return {
     generatedAt: new Date().toISOString(),
@@ -1676,23 +649,6 @@ function getSpeciesFrontPreference(species: string) {
   };
 
   return preferences[normalized] ?? { sst: 1, convergence: 1 };
-}
-
-function minOffshoreNmForSpecies(species: string) {
-  const normalized = species.trim().toLowerCase();
-  const speciesMap: Record<string, number> = {
-    tuna: 22,
-    billfish: 30,
-    swordfish: 32,
-    kingfish: 8,
-    wahoo: 30,
-    "mahi mahi": 16,
-    yellowfin: 24,
-    marlin: 32,
-    sailfish: 24
-  };
-
-  return speciesMap[normalized] ?? 12;
 }
 
 function toTempF(tempC: number | null) {
@@ -1748,23 +704,6 @@ const LAND_POLYGONS: Array<[number, number][]> = [
     [29.2, -95.4],
     [29.6, -97.2],
     [30.2, -97.8]
-  ]
-];
-
-const INSHORE_WATER_POLYGONS: Array<[number, number][]> = [
-  // Pamlico + Albemarle Sound (approximate envelope; blocks offshore species placement in sounds)
-  [
-    [36.55, -76.55],
-    [36.42, -75.95],
-    [36.08, -75.68],
-    [35.70, -75.56],
-    [35.26, -75.57],
-    [35.02, -75.72],
-    [34.96, -76.20],
-    [35.10, -76.75],
-    [35.55, -76.95],
-    [36.15, -76.90],
-    [36.55, -76.55]
   ]
 ];
 
@@ -1844,22 +783,14 @@ function isLikelyLand(point: GeoPoint) {
   return false;
 }
 
-function isLikelyInshoreWater(point: GeoPoint) {
-  return INSHORE_WATER_POLYGONS.some((polygon) => pointInPolygon(point, polygon));
-}
-
-function isLikelyNearshoreInvalid(point: GeoPoint) {
-  return isLikelyLand(point) || isLikelyInshoreWater(point);
-}
-
 function pushPointOffshore(point: GeoPoint, buoys: OceanBuoyObservation[]) {
-  if (!isLikelyNearshoreInvalid(point)) {
+  if (!isLikelyLand(point)) {
     return point;
   }
 
   // Use only buoys that are themselves verified offshore
   const offshoreAnchor = buoys
-    .filter((b) => !isLikelyNearshoreInvalid({ latitude: b.latitude, longitude: b.longitude }))
+    .filter((b) => !isLikelyLand({ latitude: b.latitude, longitude: b.longitude }))
     .map((b) => ({
       latitude: b.latitude,
       longitude: b.longitude,
@@ -1881,43 +812,6 @@ function pushPointOffshore(point: GeoPoint, buoys: OceanBuoyObservation[]) {
   return point;
 }
 
-function offshoreDistanceFromAtlanticCoastNm(point: GeoPoint) {
-  const coastLon = atlanticCoastMinLon(point.latitude);
-  if (coastLon === null) {
-    return null;
-  }
-
-  const lngPerNm = 1 / (60 * Math.max(0.1, Math.cos(point.latitude * Math.PI / 180)));
-  return Math.max(0, (point.longitude - coastLon) / lngPerNm);
-}
-
-function enforceSpeciesOffshoreBuffer(point: GeoPoint, species: string, buoys: OceanBuoyObservation[]) {
-  const pushed = pushPointOffshore(point, buoys);
-  const requiredNm = minOffshoreNmForSpecies(species);
-  const offshoreNm = offshoreDistanceFromAtlanticCoastNm(pushed);
-
-  if (offshoreNm === null || offshoreNm >= requiredNm) {
-    return pushed;
-  }
-
-  const coastLon = atlanticCoastMinLon(pushed.latitude);
-  if (coastLon === null) {
-    return pushed;
-  }
-
-  const lngPerNm = 1 / (60 * Math.max(0.1, Math.cos(pushed.latitude * Math.PI / 180)));
-  const shifted = {
-    latitude: pushed.latitude,
-    longitude: coastLon + (requiredNm * lngPerNm)
-  };
-
-  if (!isLikelyNearshoreInvalid(shifted)) {
-    return shifted;
-  }
-
-  return pushPointOffshore(shifted, buoys);
-}
-
 function filterBuoysToMarineRegion(payload: {
   buoys: OceanBuoyObservation[];
   context: FishingAdvisorContext | null;
@@ -1930,19 +824,6 @@ function filterBuoysToMarineRegion(payload: {
   return payload.buoys.filter((buoy) => {
     return distanceNm(referenceLatitude, referenceLongitude, buoy.latitude, buoy.longitude) <= maxRadiusNm;
   });
-}
-
-function hasEnoughOffshoreBuoyCoverage(payload: {
-  buoys: OceanBuoyObservation[];
-  context: FishingAdvisorContext | null;
-  minimumCount: number;
-}) {
-  const marine = filterBuoysToMarineRegion({
-    buoys: payload.buoys,
-    context: payload.context
-  }).filter((buoy) => buoy.waterTempC !== null && !isLikelyNearshoreInvalid({ latitude: buoy.latitude, longitude: buoy.longitude }));
-
-  return marine.length >= payload.minimumCount;
 }
 
 function buildBuoySignalFronts(payload: {
@@ -1976,7 +857,7 @@ function buildBuoySignalFronts(payload: {
       }
 
       const pairDistanceNm = distanceNm(a.latitude, a.longitude, b.latitude, b.longitude);
-      if (pairDistanceNm < 5 || pairDistanceNm > 260) {
+      if (pairDistanceNm < 5 || pairDistanceNm > 180) {
         continue;
       }
 
@@ -1992,7 +873,7 @@ function buildBuoySignalFronts(payload: {
         longitude: (a.longitude + b.longitude) / 2
       };
 
-      if (isLikelyNearshoreInvalid(midpoint)) {
+      if (isLikelyLand(midpoint)) {
         continue;
       }
 
@@ -2024,7 +905,7 @@ function buildBuoySignalFronts(payload: {
     }
   }
 
-  const ranked = pairSignals.sort((a, b) => b.score - a.score).slice(0, 20);
+  const ranked = pairSignals.sort((a, b) => b.score - a.score).slice(0, 8);
   const fronts: FishingOceanSignalFront[] = ranked.map((pair, index) => {
     const kind: "sst" | "convergence" = pair.convergenceScore >= 0.45 ? "convergence" : "sst";
     const strength: "high" | "medium" | "low" = pair.score >= 88 ? "high" : pair.score >= 66 ? "medium" : "low";
@@ -2072,7 +953,7 @@ function buildFishingAdvisor(payload: {
   const marineBuoys = filterBuoysToMarineRegion({
     buoys: payload.buoys,
     context: payload.context
-  }).filter((buoy) => !isLikelyNearshoreInvalid({ latitude: buoy.latitude, longitude: buoy.longitude }));
+  });
   const oceanSignals = buildBuoySignalFronts({
     buoys: marineBuoys,
     species: normalizedSpecies,
@@ -2082,8 +963,7 @@ function buildFishingAdvisor(payload: {
   const catches = payload.catches.filter((catchItem) => {
     return catchItem.latitude !== null
       && catchItem.longitude !== null
-      && catchItem.species.toLowerCase().includes(normalizedSpecies.toLowerCase())
-      && !isLikelyNearshoreInvalid({ latitude: catchItem.latitude, longitude: catchItem.longitude });
+      && catchItem.species.toLowerCase().includes(normalizedSpecies.toLowerCase());
   });
 
   const buoyTempValues = marineBuoys
@@ -2114,12 +994,7 @@ function buildFishingAdvisor(payload: {
   const zones: FishingAdvisorZone[] = Array.from(bucketByCell.entries()).map(([id, group]) => {
     const latitude = group.reduce((sum, catchItem) => sum + (catchItem.latitude as number), 0) / group.length;
     const longitude = group.reduce((sum, catchItem) => sum + (catchItem.longitude as number), 0) / group.length;
-    const offshoreCenter = enforceSpeciesOffshoreBuffer({ latitude, longitude }, normalizedSpecies, marineBuoys);
-    const requiredOffshoreNm = minOffshoreNmForSpecies(normalizedSpecies);
-    const offshoreNmAtCenter = offshoreDistanceFromAtlanticCoastNm(offshoreCenter);
-    if (offshoreNmAtCenter !== null && offshoreNmAtCenter < requiredOffshoreNm) {
-      return null;
-    }
+    const offshoreCenter = pushPointOffshore({ latitude, longitude }, marineBuoys);
     const recency = group.reduce((sum, catchItem) => {
       const ageDays = Math.max(0, (now - new Date(catchItem.timestamp).getTime()) / (1000 * 60 * 60 * 24));
       return sum + Math.exp(-ageDays / 8);
@@ -2160,18 +1035,8 @@ function buildFishingAdvisor(payload: {
         * ((nearestFront.weightedScore / 100))
       : 0.22;
 
-    const offshoreFit = offshoreNmAtCenter === null
-      ? 0.5
-      : offshoreNmAtCenter >= requiredOffshoreNm
-        ? Math.min(1, 0.6 + ((offshoreNmAtCenter - requiredOffshoreNm) / Math.max(20, requiredOffshoreNm)) * 0.4)
-        : Math.max(0, offshoreNmAtCenter / requiredOffshoreNm);
-
-    const score = Math.min(99, Math.round((group.length * 14) + (recency * 33) + (tempFit * 29) + (frontFit * 24) + (offshoreFit * 18)));
+    const score = Math.min(99, Math.round((group.length * 16) + (recency * 36) + (tempFit * 30) + (frontFit * 26)));
     const confidence: "high" | "medium" | "low" = score >= 72 ? "high" : score >= 52 ? "medium" : "low";
-    const baseRadiusNm = Math.min(14, 4 + (group.length * 1.6));
-    const shoreSafeRadiusNm = offshoreNmAtCenter === null
-      ? baseRadiusNm
-      : Math.max(2.8, Math.min(baseRadiusNm, Math.max(2.8, offshoreNmAtCenter - (requiredOffshoreNm * 0.45))));
 
     const lures = Array.from(new Set(group.map((catchItem) => catchItem.bait.split(" (")[0]?.trim() || "Unknown lure"))).slice(0, 3);
     const nearbyTempF = nearbyBuoy?.waterTempC !== null && nearbyBuoy?.waterTempC !== undefined
@@ -2195,14 +1060,12 @@ function buildFishingAdvisor(payload: {
       label: `${normalizedSpecies} lane ${id}`,
       latitude: offshoreCenter.latitude,
       longitude: offshoreCenter.longitude,
-      radiusNm: Number(shoreSafeRadiusNm.toFixed(1)),
+      radiusNm: Math.min(14, 4 + (group.length * 1.6)),
       score,
       confidence,
       reasoning
     };
-  }).filter((zone): zone is FishingAdvisorZone => zone !== null)
-    .sort((a, b) => b.score - a.score)
-    .slice(0, 4);
+  }).sort((a, b) => b.score - a.score).slice(0, 4);
 
   if (zones.length === 0) {
     const buoyFallback = marineBuoys
@@ -2215,22 +1078,13 @@ function buildFishingAdvisor(payload: {
       .slice(0, 3);
 
     buoyFallback.forEach((entry, index) => {
-      const offshoreCenter = enforceSpeciesOffshoreBuffer({ latitude: entry.buoy.latitude, longitude: entry.buoy.longitude }, normalizedSpecies, marineBuoys);
-      const requiredOffshoreNm = minOffshoreNmForSpecies(normalizedSpecies);
-      const offshoreNmAtCenter = offshoreDistanceFromAtlanticCoastNm(offshoreCenter);
-      if (offshoreNmAtCenter !== null && offshoreNmAtCenter < requiredOffshoreNm) {
-        return;
-      }
-      const baseRadiusNm = 6 + index;
-      const shoreSafeRadiusNm = offshoreNmAtCenter === null
-        ? baseRadiusNm
-        : Math.max(3, Math.min(baseRadiusNm, Math.max(3, offshoreNmAtCenter - (requiredOffshoreNm * 0.45))));
+      const offshoreCenter = pushPointOffshore({ latitude: entry.buoy.latitude, longitude: entry.buoy.longitude }, marineBuoys);
       zones.push({
         id: `buoy-${entry.buoy.stationId}`,
         label: `${normalizedSpecies} temp window near ${entry.buoy.stationId}`,
         latitude: offshoreCenter.latitude,
         longitude: offshoreCenter.longitude,
-        radiusNm: Number(shoreSafeRadiusNm.toFixed(1)),
+        radiusNm: 6 + index,
         score: Math.max(45, 74 - Math.round(entry.delta * 3)),
         confidence: index === 0 ? "medium" : "low",
         reasoning: [
@@ -2269,35 +1123,10 @@ function buildFishingAdvisor(payload: {
 async function buildSummary() {
   const baseSummary = structuredClone(dashboardSummary) as any;
   const nmea = await getNmeaTelemetry();
-  const weatherPoint = resolveWeatherReferencePoint(nmea.telemetry);
-  const externalWeather = weatherPoint
-    ? await loadExternalMarineWeather(weatherPoint.latitude, weatherPoint.longitude).catch(() => null)
-    : null;
-  baseSummary.camera = getCameraRuntimeStatus();
   baseSummary.connectivity.nmea = nmea.status;
 
-  if (externalWeather && externalWeather.windKnots !== null) {
-    baseSummary.weather.wind = `${Math.round(externalWeather.windKnots)} kt`;
-  }
-
-  if (externalWeather && externalWeather.barometerHpa !== null) {
-    baseSummary.weather.barometer = `${externalWeather.barometerHpa.toFixed(1)} hPa`;
-  }
-
-  if (externalWeather && externalWeather.tideFeet !== null) {
-    baseSummary.weather.tide = formatTideLabel(externalWeather.tideFeet, externalWeather.tideTrend);
-  }
-
-  if (externalWeather && externalWeather.waterTempF !== null) {
-    baseSummary.weather.waterTemp = `${externalWeather.waterTempF.toFixed(1)} F`;
-  }
-
-  if (weatherPoint && !nmea.telemetry?.latitude && !nmea.telemetry?.longitude) {
-    baseSummary.connectivity.gps = `${weatherPoint.latitude.toFixed(5)}, ${weatherPoint.longitude.toFixed(5)} (${weatherPoint.source})`;
-  }
-
   if (nmea.telemetry) {
-    const { speedKnots, headingDegrees, depthFeet, waterTempF, latitude, longitude } = nmea.telemetry;
+    const { speedKnots, headingDegrees, depthFeet, waterTempF } = nmea.telemetry;
 
     if (speedKnots !== null) {
       setMetricValue(baseSummary, "Speed", speedKnots.toFixed(1), "kt");
@@ -2313,16 +1142,6 @@ async function buildSummary() {
 
     if (waterTempF !== null) {
       baseSummary.weather.waterTemp = `${waterTempF.toFixed(1)} F`;
-    }
-
-    if (latitude !== null && longitude !== null) {
-      baseSummary.vesselPosition = {
-        latitude,
-        longitude,
-        source: nmea.telemetry.source,
-        updatedAt: nmea.telemetry.updatedAt
-      };
-      baseSummary.connectivity.gps = `${latitude.toFixed(5)}, ${longitude.toFixed(5)}`;
     }
   }
 
@@ -2345,73 +1164,6 @@ async function readRequestJson(req: http.IncomingMessage) {
 
   const text = Buffer.concat(chunks).toString("utf-8");
   return text.length > 0 ? JSON.parse(text) as Record<string, unknown> : null;
-}
-
-async function readRequestBody(req: http.IncomingMessage) {
-  const chunks: Buffer[] = [];
-
-  for await (const chunk of req) {
-    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-  }
-
-  return chunks.length > 0 ? Buffer.concat(chunks) : null;
-}
-
-async function proxySignalkRequest(req: http.IncomingMessage, res: http.ServerResponse, pathWithQuery: string) {
-  const method = req.method ?? "GET";
-  const body = method === "GET" || method === "HEAD" ? null : await readRequestBody(req);
-  const upstreamHeaders: Record<string, string> = {};
-
-  Object.entries(req.headers).forEach(([key, value]) => {
-    if (!value) {
-      return;
-    }
-
-    const lowerKey = key.toLowerCase();
-    if (lowerKey === "host" || lowerKey === "connection" || lowerKey === "content-length") {
-      return;
-    }
-
-    upstreamHeaders[key] = Array.isArray(value) ? value.join(", ") : value;
-  });
-
-  try {
-    const upstream = await fetch(`${SIGNALK_PROXY_BASE_URL}${pathWithQuery}`, {
-      method,
-      headers: upstreamHeaders,
-      body,
-      signal: AbortSignal.timeout(20000)
-    });
-
-    const responseHeaders: Record<string, string> = {};
-    upstream.headers.forEach((value, key) => {
-      const lowerKey = key.toLowerCase();
-      if (
-        lowerKey === "transfer-encoding"
-        || lowerKey === "connection"
-        || lowerKey === "content-length"
-        || lowerKey === "content-encoding"
-      ) {
-        return;
-      }
-
-      responseHeaders[key] = value;
-    });
-
-    res.writeHead(upstream.status, responseHeaders);
-    if (method === "HEAD") {
-      res.end();
-      return;
-    }
-
-    const payload = Buffer.from(await upstream.arrayBuffer());
-    res.end(payload);
-  } catch (error) {
-    json(res, 502, {
-      error: "Signal K upstream unavailable",
-      detail: error instanceof Error ? error.message : "Unknown proxy error"
-    });
-  }
 }
 
 const mimeTypes: Record<string, string> = {
@@ -2442,233 +1194,137 @@ function sendFile(filePath: string, res: http.ServerResponse) {
   createReadStream(filePath).pipe(res);
 }
 
-function removeCameraClient(res: http.ServerResponse) {
-  if (!cameraStreamClients.delete(res)) {
-    return;
-  }
+function shouldProxyToSignalK(pathname: string) {
+  return SIGNALK_PROXY_PREFIXES.some((prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`));
+}
 
-  if (cameraStreamClients.size > 0) {
-    return;
-  }
+function buildProxyHeaders(headers: http.IncomingHttpHeaders, override: Record<string, string> = {}) {
+  const next: Record<string, string> = {};
 
-  if (cameraStreamStopTimer) {
-    clearTimeout(cameraStreamStopTimer);
-  }
-
-  cameraStreamStopTimer = setTimeout(() => {
-    if (cameraStreamClients.size > 0) {
+  Object.entries(headers).forEach(([key, value]) => {
+    const lowerKey = key.toLowerCase();
+    if (!value || HOP_BY_HOP_HEADERS.has(lowerKey)) {
       return;
     }
 
-    if (cameraStreamProcess) {
-      try {
-        cameraStreamProcess.kill("SIGTERM");
-      } catch {
-        // Process is already gone.
-      }
-      cameraStreamProcess = null;
+    if (Array.isArray(value)) {
+      next[key] = value.join(", ");
+      return;
     }
-  }, CAMERA_STREAM_STOP_DELAY_MS);
-}
 
-function toIsoOrNull(value: number) {
-  return value > 0 ? new Date(value).toISOString() : null;
-}
-
-function getCameraDeviceCandidates() {
-  const configured = (process.env.PALMER_LOU_CAMERA_DEVICE ?? "").trim();
-  const configuredList = (process.env.PALMER_LOU_CAMERA_DEVICE_CANDIDATES ?? "")
-    .split(",")
-    .map((entry) => entry.trim())
-    .filter((entry) => entry.length > 0);
-  const fallback = ["/dev/video0", "/dev/video1", "/dev/video2"];
-  const deduped = new Set<string>();
-
-  if (configured.length > 0) {
-    deduped.add(configured);
-  }
-  for (const candidate of configuredList) {
-    deduped.add(candidate);
-  }
-  for (const candidate of fallback) {
-    deduped.add(candidate);
-  }
-
-  return Array.from(deduped);
-}
-
-function getCameraRuntimeStatus() {
-  const now = Date.now();
-  const candidates = cameraLastCandidateList.length > 0 ? cameraLastCandidateList : getCameraDeviceCandidates();
-  const selectedDevice = candidates.find((candidate) => existsSync(candidate)) ?? null;
-  const frameAgeMs = cameraLastFrameAt > 0 ? Math.max(0, now - cameraLastFrameAt) : null;
-  const streamActive = cameraStreamProcess !== null && frameAgeMs !== null && frameAgeMs < 6000;
-  const clientCount = cameraStreamClients.size;
-  const status = !selectedDevice
-    ? "Offline"
-    : streamActive
-      ? "Live"
-      : clientCount > 0
-        ? "Degraded"
-        : "Ready";
+    next[key] = value;
+  });
 
   return {
-    ...dashboardSummary.camera,
-    status,
-    recording: streamActive,
-    latencyMs: frameAgeMs ?? 0,
-    streamActive,
-    activeClients: clientCount,
-    selectedDevice,
-    candidates,
-    devicePresent: selectedDevice !== null,
-    processRunning: cameraStreamProcess !== null,
-    startedAt: toIsoOrNull(cameraLastStartAt),
-    lastFrameAt: toIsoOrNull(cameraLastFrameAt),
-    restartCount: cameraRestartCount,
-    lastExitCode: cameraLastExitCode,
-    lastExitSignal: cameraLastExitSignal,
-    lastError: cameraLastError,
-    lastStderr: cameraLastStderr
+    ...next,
+    ...override,
+    host: signalKUrl.host
   };
 }
 
-function startCameraBroadcast() {
-  if (cameraStreamProcess) {
-    return;
-  }
+async function proxySignalKRequest(req: http.IncomingMessage, res: http.ServerResponse, url: URL) {
+  await new Promise<void>((resolve) => {
+    const upstreamReq = http.request({
+      protocol: signalKUrl.protocol,
+      hostname: signalKUrl.hostname,
+      port: Number(signalKUrl.port || 80),
+      method: req.method,
+      path: `${url.pathname}${url.search}`,
+      headers: buildProxyHeaders(req.headers)
+    }, (upstreamRes) => {
+      const responseHeaders: Record<string, string | string[]> = {};
 
-  const candidates = getCameraDeviceCandidates();
-  cameraLastCandidateList = candidates;
-  const device = candidates.find((candidate) => existsSync(candidate));
-  if (!device) {
-    cameraLastError = `Camera device not found. Checked: ${candidates.join(", ")}`;
-    for (const client of cameraStreamClients) {
-      if (client.writableEnded || client.destroyed) {
-        continue;
-      }
-      client.write(`--ffmpeg\r\nContent-Type: text/plain\r\n\r\n${cameraLastError}\r\n`);
-      client.end();
-    }
-    cameraStreamClients.clear();
-    return;
-  }
-
-  cameraLastStartAt = Date.now();
-  cameraRestartCount += 1;
-  cameraLastExitCode = null;
-  cameraLastExitSignal = null;
-  cameraLastStderr = "";
-
-  const ff = spawn("ffmpeg", [
-    "-hide_banner",
-    "-loglevel", "warning",
-    "-fflags", "nobuffer",
-    "-f", "v4l2",
-    "-thread_queue_size", "128",
-    "-framerate", "30",
-    "-i", device,
-    "-vf", "scale=960:-2",
-    "-f", "mpjpeg",
-    "-q:v", "8",
-    "-"
-  ], { stdio: ["ignore", "pipe", "pipe"] });
-
-  cameraStreamProcess = ff;
-
-  ff.stdout.on("data", (chunk: Buffer) => {
-    cameraLastFrameAt = Date.now();
-    cameraLastError = null;
-    for (const client of Array.from(cameraStreamClients)) {
-      if (client.writableEnded || client.destroyed) {
-        removeCameraClient(client);
-        continue;
-      }
-
-      try {
-        client.write(chunk);
-      } catch {
-        try {
-          client.end();
-        } catch {
-          // Ignore close errors.
+      Object.entries(upstreamRes.headers).forEach(([key, value]) => {
+        const lowerKey = key.toLowerCase();
+        if (!value || HOP_BY_HOP_HEADERS.has(lowerKey)) {
+          return;
         }
-        removeCameraClient(client);
+
+        responseHeaders[key] = value;
+      });
+
+      res.writeHead(upstreamRes.statusCode ?? 502, responseHeaders);
+      upstreamRes.pipe(res);
+      upstreamRes.on("end", () => resolve());
+    });
+
+    upstreamReq.on("error", (error) => {
+      if (!res.headersSent) {
+        json(res, 502, {
+          error: "Signal K upstream unavailable",
+          detail: error.message
+        });
+      } else {
+        res.end();
       }
-    }
-  });
 
-  ff.stderr.on("data", (chunk: Buffer) => {
-    const text = chunk.toString("utf-8").trim();
-    if (text.length === 0) {
-      return;
-    }
+      resolve();
+    });
 
-    cameraLastStderr = text.split(/\r?\n/).slice(-4).join(" | ");
-    cameraLastError = cameraLastStderr;
-    console.warn(`[camera] ${cameraLastStderr}`);
-  });
-
-  const handleCameraExit = (code?: number | null, signal?: NodeJS.Signals | null, errorMessage?: string) => {
-    if (cameraStreamProcess === ff) {
-      cameraStreamProcess = null;
-    }
-
-    if (typeof code === "number") {
-      cameraLastExitCode = code;
-    }
-    if (signal) {
-      cameraLastExitSignal = signal;
-    }
-    if (cameraStreamClients.size === 0 && code === 255 && !signal && !errorMessage) {
-      // ffmpeg exits 255 on normal stdin/pipe teardown in some builds.
-      cameraLastError = null;
-      cameraLastStderr = "";
-    } else if (errorMessage && errorMessage.length > 0) {
-      cameraLastError = errorMessage;
-    } else if (cameraLastError === null) {
-      cameraLastError = `ffmpeg exited${typeof code === "number" ? ` code ${code}` : ""}${signal ? ` signal ${signal}` : ""}`;
-    }
-
-    if (cameraStreamClients.size > 0) {
-      setTimeout(() => {
-        if (cameraStreamClients.size > 0 && !cameraStreamProcess) {
-          startCameraBroadcast();
-        }
-      }, 1200);
-    }
-  };
-
-  ff.on("close", (code, signal) => {
-    handleCameraExit(code, signal ?? null);
-  });
-  ff.on("error", (error) => {
-    const message = error instanceof Error ? error.message : "Unknown ffmpeg spawn error";
-    handleCameraExit(null, null, message);
+    req.pipe(upstreamReq);
   });
 }
 
-function attachCameraClient(req: http.IncomingMessage, res: http.ServerResponse) {
-  if (cameraStreamStopTimer) {
-    clearTimeout(cameraStreamStopTimer);
-    cameraStreamStopTimer = null;
-  }
-
-  res.writeHead(200, {
-    "Content-Type": "multipart/x-mixed-replace; boundary=ffmpeg",
-    "Cache-Control": "no-cache, no-store, must-revalidate",
-    "Pragma": "no-cache",
-    "Connection": "keep-alive"
+function proxySignalKWebSocket(req: http.IncomingMessage, socket: import("node:net").Socket, head: Buffer) {
+  const upstreamReq = http.request({
+    protocol: signalKUrl.protocol,
+    hostname: signalKUrl.hostname,
+    port: Number(signalKUrl.port || 80),
+    method: "GET",
+    path: req.url,
+    headers: buildProxyHeaders(req.headers, {
+      Connection: "Upgrade",
+      Upgrade: req.headers.upgrade ?? "websocket"
+    })
   });
 
-  cameraStreamClients.add(res);
-  startCameraBroadcast();
+  upstreamReq.on("upgrade", (upstreamRes, upstreamSocket, upstreamHead) => {
+    const statusCode = upstreamRes.statusCode ?? 101;
+    const statusText = upstreamRes.statusMessage ?? "Switching Protocols";
+    socket.write(`HTTP/1.1 ${statusCode} ${statusText}\r\n`);
 
-  const cleanup = () => removeCameraClient(res);
-  req.on("close", cleanup);
-  req.on("error", cleanup);
-  res.on("close", cleanup);
-  res.on("error", cleanup);
+    Object.entries(upstreamRes.headers).forEach(([key, value]) => {
+      if (!value) {
+        return;
+      }
+
+      if (Array.isArray(value)) {
+        value.forEach((entry) => socket.write(`${key}: ${entry}\r\n`));
+        return;
+      }
+
+      socket.write(`${key}: ${value}\r\n`);
+    });
+
+    socket.write("\r\n");
+
+    if (head.length > 0) {
+      upstreamSocket.write(head);
+    }
+
+    if (upstreamHead.length > 0) {
+      socket.write(upstreamHead);
+    }
+
+    upstreamSocket.pipe(socket);
+    socket.pipe(upstreamSocket);
+
+    upstreamSocket.on("error", () => socket.destroy());
+    socket.on("error", () => upstreamSocket.destroy());
+  });
+
+  upstreamReq.on("response", (upstreamRes) => {
+    const statusCode = upstreamRes.statusCode ?? 502;
+    const statusText = upstreamRes.statusMessage ?? "Bad Gateway";
+    socket.write(`HTTP/1.1 ${statusCode} ${statusText}\r\n\r\n`);
+    socket.destroy();
+  });
+
+  upstreamReq.on("error", () => {
+    socket.destroy();
+  });
+
+  upstreamReq.end();
 }
 
 function withinUiDist(filePath: string) {
@@ -2696,14 +1352,8 @@ const server = http.createServer(async (req, res) => {
   const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "127.0.0.1"}`);
   const { pathname } = url;
 
-  const isSignalkAdminRoute = pathname === "/admin"
-    || pathname.startsWith("/admin/")
-    || pathname.startsWith("/@signalk/")
-    || pathname.startsWith("/socket.io/")
-    || /^\/signalk-[^/]+\//.test(pathname);
-
-  if (pathname === "/signalk" || pathname.startsWith("/signalk/") || pathname.startsWith("/plugins/") || isSignalkAdminRoute) {
-    await proxySignalkRequest(req, res, `${pathname}${url.search}`);
+  if (shouldProxyToSignalK(pathname)) {
+    await proxySignalKRequest(req, res, url);
     return;
   }
 
@@ -2711,20 +1361,13 @@ const server = http.createServer(async (req, res) => {
     try {
       const payload = await readRequestJson(req);
       const action = payload?.action;
-      const mac = typeof payload?.mac === "string" ? payload.mac.toUpperCase().trim() : "";
-      const name = typeof payload?.name === "string" ? payload.name.trim() : "";
 
       if (action !== "pair" && action !== "reconnect" && action !== "route-audio" && action !== "disconnect") {
         json(res, 400, { error: "Invalid Bluetooth action" });
         return;
       }
 
-      if (mac && !/^([0-9A-F]{2}:){5}[0-9A-F]{2}$/.test(mac)) {
-        json(res, 400, { error: "Invalid MAC address format — expected AA:BB:CC:DD:EE:FF" });
-        return;
-      }
-
-      json(res, 200, await applyBluetoothAction(action as BluetoothAction, mac || undefined, name || undefined));
+      json(res, 200, await applyBluetoothAction(action as BluetoothAction));
       return;
     } catch (error) {
       json(res, 500, {
@@ -2748,90 +1391,6 @@ const server = http.createServer(async (req, res) => {
     }
   }
 
-  if (pathname === "/api/bluetooth/scan" && req.method === "GET") {
-    const devices = await scanBluetoothDevices();
-    json(res, 200, { devices });
-    return;
-  }
-
-  if (pathname === "/api/bluetooth/configure" && req.method === "POST") {
-    try {
-      const payload = await readRequestJson(req);
-      const mac = (typeof payload?.mac === "string" ? payload.mac : "").toUpperCase().trim();
-      const deviceName = typeof payload?.name === "string" ? payload.name : mac;
-      if (!/^([0-9A-F]{2}:){5}[0-9A-F]{2}$/.test(mac)) {
-        json(res, 400, { error: "Invalid MAC address format — expected AA:BB:CC:DD:EE:FF" });
-        return;
-      }
-      await configureBluetoothDevice(mac, deviceName);
-      json(res, 200, await getBluetoothState());
-      return;
-    } catch (error) {
-      json(res, 400, {
-        error: "Failed to configure Bluetooth device",
-        detail: error instanceof Error ? error.message : "Invalid request"
-      });
-      return;
-    }
-  }
-
-  if (pathname === "/api/wifi" && req.method === "GET") {
-    try {
-      const shouldScan = url.searchParams.get("scan") === "1";
-      json(res, 200, await scanWifiNetworks(shouldScan));
-      return;
-    } catch (error) {
-      json(res, 500, {
-        error: "Failed to scan Wi‑Fi networks",
-        detail: error instanceof Error ? error.message : "Unknown error"
-      });
-      return;
-    }
-  }
-
-  if (pathname === "/api/wifi/connect" && req.method === "POST") {
-    try {
-      const payload = await readRequestJson(req);
-      const ssid = typeof payload?.ssid === "string" ? payload.ssid.trim() : "";
-      const password = typeof payload?.password === "string" ? payload.password : "";
-
-      if (!ssid) {
-        json(res, 400, { error: "Missing Wi‑Fi SSID" });
-        return;
-      }
-
-      json(res, 200, await joinWifiNetwork(ssid, password));
-      return;
-    } catch (error) {
-      json(res, 500, {
-        error: "Failed to connect to Wi‑Fi network",
-        detail: error instanceof Error ? error.message : "Unknown error"
-      });
-      return;
-    }
-  }
-
-  if (pathname === "/api/wifi/disconnect" && req.method === "POST") {
-    try {
-      const payload = await readRequestJson(req);
-      const ssid = typeof payload?.ssid === "string" ? payload.ssid.trim() : "";
-
-      json(res, 200, await disconnectWifiNetwork(ssid || undefined));
-      return;
-    } catch (error) {
-      json(res, 500, {
-        error: "Failed to disconnect from Wi‑Fi network",
-        detail: error instanceof Error ? error.message : "Unknown error"
-      });
-      return;
-    }
-  }
-
-  if (pathname === "/api/camera/stream" && req.method === "GET") {
-    attachCameraClient(req, res);
-    return;
-  }
-
   if (pathname === "/api/launch/app" && req.method === "POST") {
     try {
       const payload = await readRequestJson(req);
@@ -2839,14 +1398,13 @@ const server = http.createServer(async (req, res) => {
       const name = typeof payload?.name === "string" ? payload.name : "";
       const launchUrl = typeof payload?.launchUrl === "string" ? payload.launchUrl : "";
       const launchLabel = typeof payload?.launchLabel === "string" ? payload.launchLabel : "Launch app";
-      const requestSource = payload?.requestSource === "remote" ? "remote" : "kiosk";
 
       if (!appId || !name || !launchUrl) {
         json(res, 400, { error: "Invalid launch request" });
         return;
       }
 
-      json(res, 200, await launchApp({ appId, name, launchUrl, launchLabel, requestSource }));
+      json(res, 200, await launchApp({ appId, name, launchUrl, launchLabel }));
       return;
     } catch (error) {
       json(res, 500, {
@@ -2864,19 +1422,6 @@ const server = http.createServer(async (req, res) => {
     } catch (error) {
       json(res, 500, {
         error: "Failed to return home",
-        detail: error instanceof Error ? error.message : "Unknown error"
-      });
-      return;
-    }
-  }
-
-  if (pathname === "/api/launch/kill" && req.method === "POST") {
-    try {
-      json(res, 200, await killLaunchedApp());
-      return;
-    } catch (error) {
-      json(res, 500, {
-        error: "Failed to kill launched app",
         detail: error instanceof Error ? error.message : "Unknown error"
       });
       return;
@@ -2904,64 +1449,6 @@ const server = http.createServer(async (req, res) => {
     }
   }
 
-  if (pathname === "/api/remote/control/action" && req.method === "POST") {
-    try {
-      const payload = await readRequestJson(req);
-      const action = payload?.action;
-      const targetAppId = typeof payload?.appId === "string" ? payload.appId.trim() : "";
-      const controlModeRaw = typeof payload?.controlMode === "string" ? payload.controlMode.trim().toLowerCase() : "";
-      const controlMode = controlModeRaw === "keys" ? "keys" : "cursor";
-      const repeatRaw = Number(payload?.repeat ?? 1);
-      const repeat = Number.isFinite(repeatRaw) ? Math.max(1, Math.min(8, Math.floor(repeatRaw))) : 1;
-
-      const validActions: RemoteControlAction[] = ["up", "down", "left", "right", "select", "back", "home", "playpause", "volup", "voldown", "mute", "backspace"];
-      if (typeof action !== "string" || !validActions.includes(action as RemoteControlAction)) {
-        json(res, 400, { error: "Invalid remote control action" });
-        return;
-      }
-
-      if (action === "home") {
-        json(res, 200, await returnToHome());
-        return;
-      }
-
-      json(res, 200, await runRemoteControlAction(
-        action as RemoteControlAction,
-        repeat,
-        {
-          ...(targetAppId ? { targetAppId } : {}),
-          controlMode
-        }
-      ));
-      return;
-    } catch (error) {
-      json(res, 500, {
-        error: "Failed to run remote control action",
-        detail: error instanceof Error ? error.message : "Unknown error"
-      });
-      return;
-    }
-  }
-
-  if (pathname === "/api/remote/type" && req.method === "POST") {
-    try {
-      const payload = await readRequestJson(req);
-      const text = typeof payload?.text === "string" ? payload.text : "";
-      if (!text) {
-        json(res, 400, { error: "Missing text" });
-        return;
-      }
-      json(res, 200, await runRemoteTypeAction(text));
-      return;
-    } catch (error) {
-      json(res, 500, {
-        error: "Failed to type text",
-        detail: error instanceof Error ? error.message : "Unknown error"
-      });
-      return;
-    }
-  }
-
   if (pathname === "/api/remote/update/apply" && req.method === "POST") {
     try {
       json(res, 200, await runRemoteUpdate(repoRoot));
@@ -2983,17 +1470,16 @@ const server = http.createServer(async (req, res) => {
       const providedBuoys = Array.isArray(payload?.buoys) ? payload.buoys as OceanBuoyObservation[] : [];
       const referenceLatitude = typeof payload?.referenceLatitude === "number" ? payload.referenceLatitude : null;
       const referenceLongitude = typeof payload?.referenceLongitude === "number" ? payload.referenceLongitude : null;
-      const requestedRadius = typeof payload?.maxRadiusNm === "number" ? payload.maxRadiusNm : 1400;
+      const requestedRadius = typeof payload?.maxRadiusNm === "number" ? payload.maxRadiusNm : 220;
       const context = referenceLatitude !== null && referenceLongitude !== null
         ? {
             referenceLatitude,
             referenceLongitude,
-            maxRadiusNm: Math.max(80, Math.min(2200, requestedRadius))
+            maxRadiusNm: Math.max(40, Math.min(360, requestedRadius))
           }
         : null;
 
-      void providedBuoys;
-      const buoys = await loadBuoyObservations();
+      const buoys = providedBuoys.length > 0 ? providedBuoys : await loadBuoyObservations();
 
       json(res, 200, buildFishingAdvisor({ species, catches, buoys, context }));
       return;
@@ -3013,12 +1499,11 @@ const server = http.createServer(async (req, res) => {
       const providedBuoys = Array.isArray(payload?.buoys) ? payload.buoys as OceanBuoyObservation[] : [];
       const referenceLatitude = typeof payload?.referenceLatitude === "number" ? payload.referenceLatitude : null;
       const referenceLongitude = typeof payload?.referenceLongitude === "number" ? payload.referenceLongitude : null;
-      const requestedRadius = typeof payload?.maxRadiusNm === "number" ? payload.maxRadiusNm : 1600;
+      const requestedRadius = typeof payload?.maxRadiusNm === "number" ? payload.maxRadiusNm : 260;
       const context = referenceLatitude !== null && referenceLongitude !== null
-        ? { referenceLatitude, referenceLongitude, maxRadiusNm: Math.max(80, Math.min(2200, requestedRadius)) }
+        ? { referenceLatitude, referenceLongitude, maxRadiusNm: Math.max(40, Math.min(400, requestedRadius)) }
         : null;
-      void providedBuoys;
-      const buoys = await loadBuoyObservations();
+      const buoys = providedBuoys.length > 0 ? providedBuoys : await loadBuoyObservations();
 
       json(res, 200, buildAllSpeciesIntel({ buoys, catches, context }));
       return;
@@ -3032,20 +1517,8 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method !== "GET") {
-    if (pathname === "/api/home-port-config" && req.method === "POST") {
-      const payload = await readRequestJson(req);
-      const saved = writeHomePortConfig(payload);
-      json(res, 200, saved);
-      return;
-    }
-
     res.writeHead(405, { Allow: "GET" });
     res.end("Method not allowed");
-    return;
-  }
-
-  if (pathname === "/api/home-port-config") {
-    json(res, 200, readHomePortConfig());
     return;
   }
 
@@ -3135,216 +1608,6 @@ const server = http.createServer(async (req, res) => {
         error: "Failed to load buoy observations",
         detail: error instanceof Error ? error.message : "Unknown error"
       });
-      return;
-    }
-  }
-
-  if (pathname === "/api/ocean/currents") {
-    try {
-      const bounds = parseOceanBounds(url);
-      const limit = Math.max(12, Math.min(180, Number.parseInt(url.searchParams.get("limit") ?? "96", 10)));
-      const result = await loadOceanCurrentVectors(bounds, limit);
-
-      json(res, 200, {
-        generatedAt: new Date().toISOString(),
-        source: result.source,
-        count: result.vectors.length,
-        vectors: result.vectors
-      });
-      return;
-    } catch (error) {
-      json(res, 502, {
-        error: "Failed to load ocean current vectors",
-        detail: error instanceof Error ? error.message : "Unknown error"
-      });
-      return;
-    }
-  }
-
-  if (pathname === "/api/weather/radar/frame") {
-    try {
-      const radar = await loadStormRadarFrame();
-      if (!radar.frame) {
-        json(res, 200, {
-          available: false,
-          source: "RainViewer",
-          message: "No radar frame available"
-        });
-        return;
-      }
-
-      json(res, 200, {
-        available: true,
-        source: "RainViewer",
-        observedAt: radar.frame.time ? new Date(radar.frame.time * 1000).toISOString() : null,
-        tileUrlTemplate: `/api/weather/radar/tiles/{z}/{x}/{y}.png?path=${encodeURIComponent(radar.frame.path)}`,
-        timeline: radar.timeline.map((frame) => ({
-          kind: frame.kind,
-          observedAt: frame.time ? new Date(frame.time * 1000).toISOString() : null,
-          tileUrlTemplate: `/api/weather/radar/tiles/{z}/{x}/{y}.png?path=${encodeURIComponent(frame.path)}`
-        }))
-      });
-      return;
-    } catch (error) {
-      json(res, 502, {
-        available: false,
-        source: "RainViewer",
-        message: "Failed to fetch storm radar frame",
-        detail: error instanceof Error ? error.message : "Unknown error"
-      });
-      return;
-    }
-  }
-
-  if (pathname === "/api/weather/forecast") {
-    try {
-      const result = await loadWindyForecast();
-      if (result.cards.length > 0) {
-        json(res, 200, {
-          available: result.available,
-          source: result.source,
-          cards: result.cards
-        });
-        return;
-      }
-
-      const nmea = await getNmeaTelemetry();
-      const weatherPoint = resolveWeatherReferencePoint(nmea.telemetry);
-      if (weatherPoint) {
-        const externalWeather = await loadExternalMarineWeather(weatherPoint.latitude, weatherPoint.longitude).catch(() => null);
-        if (externalWeather && externalWeather.cards.length > 0) {
-          json(res, 200, {
-            available: true,
-            source: externalWeather.source,
-            cards: externalWeather.cards
-          });
-          return;
-        }
-      }
-
-      json(res, 200, {
-        available: false,
-        source: result.source,
-        cards: []
-      });
-      return;
-    } catch {
-      const nmea = await getNmeaTelemetry().catch(() => ({ telemetry: null }));
-      const weatherPoint = resolveWeatherReferencePoint(nmea.telemetry);
-      if (weatherPoint) {
-        const externalWeather = await loadExternalMarineWeather(weatherPoint.latitude, weatherPoint.longitude).catch(() => null);
-        if (externalWeather && externalWeather.cards.length > 0) {
-          json(res, 200, {
-            available: true,
-            source: externalWeather.source,
-            cards: externalWeather.cards
-          });
-          return;
-        }
-      }
-
-      json(res, 200, {
-        available: false,
-        source: "Signal K Windy / Open-Meteo fallback",
-        cards: []
-      });
-      return;
-    }
-  }
-
-  const stormRadarTileMatch = pathname.match(/^\/api\/weather\/radar\/tiles\/(\d+)\/(\d+)\/(\d+)\.png$/);
-  if (stormRadarTileMatch) {
-    const requestedZ = Number.parseInt(stormRadarTileMatch[1] ?? "0", 10);
-    const requestedX = Number.parseInt(stormRadarTileMatch[2] ?? "0", 10);
-    const requestedY = Number.parseInt(stormRadarTileMatch[3] ?? "0", 10);
-
-    const z = Math.max(0, Math.min(STORM_RADAR_MAX_NATIVE_ZOOM, requestedZ));
-    const zoomFactor = requestedZ > z ? 2 ** (requestedZ - z) : 1;
-    const x = Math.floor(requestedX / zoomFactor);
-    const y = Math.floor(requestedY / zoomFactor);
-    const maxTileIndex = (2 ** z) - 1;
-
-    if (!Number.isFinite(requestedZ) || !Number.isFinite(requestedX) || !Number.isFinite(requestedY) || !Number.isFinite(x) || !Number.isFinite(y)) {
-      json(res, 400, { error: "Invalid radar tile coordinates" });
-      return;
-    }
-
-    if (x < 0 || y < 0 || x > maxTileIndex || y > maxTileIndex) {
-      res.writeHead(200, {
-        "Content-Type": "image/png",
-        "Cache-Control": "public, max-age=120",
-        "X-PalmerLou-Radar-Cache": "OUT_OF_RANGE"
-      });
-      res.end(TRANSPARENT_PNG_BUFFER);
-      return;
-    }
-
-    try {
-      const radar = await loadStormRadarFrame();
-      const pathFromQuery = (url.searchParams.get("path") ?? "").trim();
-      const framePath = pathFromQuery || radar.frame?.path;
-      if (!framePath) {
-        res.writeHead(200, { "Content-Type": "image/png", "Cache-Control": "public, max-age=120" });
-        res.end(TRANSPARENT_PNG_BUFFER);
-        return;
-      }
-
-      const host = radar.host;
-      const cacheKey = `${framePath}:${z}:${x}:${y}`;
-      const now = Date.now();
-      const cached = stormRadarTileCache.get(cacheKey);
-      if (cached && cached.expiresAt > now) {
-        res.writeHead(200, {
-          "Content-Type": cached.contentType,
-          "Cache-Control": "public, max-age=180",
-          "X-PalmerLou-Radar-Cache": "HIT"
-        });
-        res.end(cached.body);
-        return;
-      }
-
-      const remoteUrl = buildStormRadarTileUrl(host, framePath, z, x, y);
-      const remoteResponse = await fetch(remoteUrl, {
-        headers: {
-          "User-Agent": "Palmer-Lou-OS/1.0 (+storm-radar-proxy)"
-        },
-        signal: AbortSignal.timeout(12000)
-      });
-
-      const contentType = (remoteResponse.headers.get("content-type") ?? "").toLowerCase();
-      if (!remoteResponse.ok || !contentType.startsWith("image/")) {
-        res.writeHead(200, {
-          "Content-Type": "image/png",
-          "Cache-Control": "public, max-age=120",
-          "X-PalmerLou-Radar-Cache": "MISS_EMPTY"
-        });
-        res.end(TRANSPARENT_PNG_BUFFER);
-        return;
-      }
-
-      const responseContentType = remoteResponse.headers.get("content-type") ?? "image/png";
-      const body = Buffer.from(await remoteResponse.arrayBuffer());
-      stormRadarTileCache.set(cacheKey, {
-        expiresAt: now + STORM_RADAR_TILE_CACHE_TTL_MS,
-        contentType: responseContentType,
-        body
-      });
-      pruneStormRadarTileCache();
-
-      res.writeHead(200, {
-        "Content-Type": responseContentType,
-        "Cache-Control": "public, max-age=180",
-        "X-PalmerLou-Radar-Cache": "MISS"
-      });
-      res.end(body);
-      return;
-    } catch {
-      res.writeHead(200, {
-        "Content-Type": "image/png",
-        "Cache-Control": "public, max-age=120",
-        "X-PalmerLou-Radar-Cache": "UNAVAILABLE"
-      });
-      res.end(TRANSPARENT_PNG_BUFFER);
       return;
     }
   }
@@ -3439,34 +1702,12 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (pathname === "/api/trips") {
-    try {
-      const result = await loadCruiseReportTrips();
-      json(res, 200, result.trips);
-      return;
-    } catch {
-      json(res, 200, dashboardSummary.trips);
-    }
-    return;
-  }
-
-  if (pathname === "/api/integrations/signalk") {
-    try {
-      json(res, 200, await getSignalKIntegrationStatus());
-      return;
-    } catch {
-      json(res, 200, {
-        signalKBaseUrl: process.env.PALMER_LOU_SIGNALK_BASE_URL ?? "http://127.0.0.1:3000",
-        installedPlugins: [],
-        cruiseReport: { candidates: ["signalk-cruisereport", "signalk-cruise-report"], active: null },
-        windy: { candidates: ["signalk-windy-plugin", "windy-plugin"], active: null }
-      });
-      return;
-    }
+    json(res, 200, dashboardSummary.trips);
     return;
   }
 
   if (pathname === "/api/camera/status") {
-    json(res, 200, getCameraRuntimeStatus());
+    json(res, 200, dashboardSummary.camera);
     return;
   }
 
@@ -3480,11 +1721,6 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  if (pathname === "/api/remote/app-url") {
-    json(res, 200, { url: (process.env.PALMER_LOU_REMOTE_APP_URL ?? "").trim() });
-    return;
-  }
-
   if (pathname === "/brand/logo.png") {
     if (existsSync(brandArtwork)) {
       sendFile(brandArtwork, res);
@@ -3494,21 +1730,6 @@ const server = http.createServer(async (req, res) => {
     res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
     res.end("Brand artwork not found");
     return;
-  }
-
-  if (pathname === "/brand/remote-qr.svg") {
-    const remoteAppUrl = (process.env.PALMER_LOU_REMOTE_APP_URL ?? "").trim();
-    if (remoteAppUrl) {
-      try {
-        const { default: QRCode } = await import("qrcode");
-        const svg = await (QRCode as any).toString(remoteAppUrl, { type: "svg", margin: 2 });
-        res.writeHead(200, { "Content-Type": "image/svg+xml", "Cache-Control": "public, max-age=3600" });
-        res.end(svg);
-        return;
-      } catch {
-        // fall through to static file
-      }
-    }
   }
 
   if (pathname === "/favicon.ico") {
@@ -3541,6 +1762,16 @@ const server = http.createServer(async (req, res) => {
   json(res, 404, { error: "Not found", path: pathname });
 });
 
+server.on("upgrade", (req, socket, head) => {
+  const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "127.0.0.1"}`);
+  if (!shouldProxyToSignalK(url.pathname)) {
+    socket.destroy();
+    return;
+  }
+
+  proxySignalKWebSocket(req, socket as import("node:net").Socket, head);
+});
+
 async function startServer() {
   if (requireBluetoothReady) {
     const bluetoothState = await getBluetoothState();
@@ -3563,33 +1794,6 @@ async function startServer() {
 
   server.listen(port, "0.0.0.0", () => {
     console.log(`Palmer Lou backend running on http://127.0.0.1:${port}`);
-
-    // Auto-reconnect to the saved Bluetooth stereo 8 s after startup
-    const savedMac = process.env.PALMER_LOU_BT_DEVICE_MAC?.trim();
-    if (process.platform === "linux" && savedMac) {
-      setTimeout(() => {
-        applyBluetoothAction("reconnect").catch(() => {});
-      }, 8000);
-
-      // Keep trying in the background so the stereo link self-recovers.
-      setInterval(() => {
-        getBluetoothState()
-          .then((state) => {
-            if (!state.connected) {
-              return applyBluetoothAction("reconnect")
-                .then(() => applyBluetoothAction("route-audio"))
-                .catch(() => undefined);
-            }
-
-            if (state.connected && state.audioRoute !== "Stereo route active") {
-              return applyBluetoothAction("route-audio").catch(() => undefined);
-            }
-
-            return undefined;
-          })
-          .catch(() => undefined);
-      }, 45000);
-    }
   });
 }
 
