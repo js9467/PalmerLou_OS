@@ -9,7 +9,7 @@ import { getNmeaTelemetry } from "./nmea.js";
 import { getLauncherState, launchApp, returnToHome } from "./launcher.js";
 import { getRemoteAccessStatus, getRemoteUpdateStatus, runRemoteUpdate, runTunnelAction, type RemoteAccessStatus } from "./remote.js";
 import { resolveUpdateStatus } from "./update.js";
-
+import { scanWifiNetworks, joinWifiNetwork, disconnectWifiNetwork } from "./wifi.js";
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, "../../..");
 const uiDist = path.resolve(repoRoot, "apps/ui/dist");
@@ -1550,6 +1550,35 @@ const server = http.createServer(async (req, res) => {
     }
   }
 
+  if (pathname === "/api/wifi/connect" && req.method === "POST") {
+    try {
+      const payload = await readRequestJson(req);
+      const ssid = typeof payload?.ssid === "string" ? payload.ssid : "";
+      const password = typeof payload?.password === "string" ? payload.password : undefined;
+      if (!ssid) {
+        json(res, 400, { error: "Missing ssid" });
+        return;
+      }
+      json(res, 200, await joinWifiNetwork(ssid, password));
+      return;
+    } catch (error) {
+      json(res, 500, { error: "Wi-Fi join failed", detail: error instanceof Error ? error.message : "Unknown error" });
+      return;
+    }
+  }
+
+  if (pathname === "/api/wifi/disconnect" && req.method === "POST") {
+    try {
+      const payload = await readRequestJson(req);
+      const ssid = typeof payload?.ssid === "string" ? payload.ssid : undefined;
+      json(res, 200, await disconnectWifiNetwork(ssid));
+      return;
+    } catch (error) {
+      json(res, 500, { error: "Wi-Fi disconnect failed", detail: error instanceof Error ? error.message : "Unknown error" });
+      return;
+    }
+  }
+
   if (req.method !== "GET") {
     res.writeHead(405, { Allow: "GET" });
     res.end("Method not allowed");
@@ -1776,6 +1805,16 @@ const server = http.createServer(async (req, res) => {
 
   if (pathname === "/api/bluetooth") {
     json(res, 200, await getBluetoothState());
+    return;
+  }
+
+  if (pathname === "/api/wifi") {
+    try {
+      const scan = url.searchParams.get("scan") === "1";
+      json(res, 200, await scanWifiNetworks(scan));
+    } catch (error) {
+      json(res, 500, { error: "Wi-Fi scan failed", detail: error instanceof Error ? error.message : "Unknown error", networks: [] });
+    }
     return;
   }
 
