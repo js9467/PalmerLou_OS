@@ -1,5 +1,6 @@
 import http from "node:http";
 import { createReadStream, existsSync, statSync } from "node:fs";
+import { spawn } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { applyBluetoothAction, getBluetoothState, runBluetoothDiagnostics, type BluetoothAction } from "./bluetooth.js";
@@ -1126,14 +1127,33 @@ async function buildSummary() {
   baseSummary.connectivity.nmea = nmea.status;
 
   if (nmea.telemetry) {
-    const { speedKnots, headingDegrees, depthFeet, waterTempF } = nmea.telemetry;
+    const { speedKnots, headingDegrees, headingSource, depthFeet, waterTempF, latitude, longitude } = nmea.telemetry;
+
+    if (latitude !== null && longitude !== null) {
+      baseSummary.vesselPosition = { latitude, longitude };
+      baseSummary.connectivity.gps = `${latitude.toFixed(5)}, ${longitude.toFixed(5)}`;
+    }
 
     if (speedKnots !== null) {
       setMetricValue(baseSummary, "Speed", speedKnots.toFixed(1), "kt");
     }
 
     if (headingDegrees !== null) {
-      setMetricValue(baseSummary, "Heading", Math.round(headingDegrees).toString(), "deg");
+      const isCog = headingSource === "cog";
+      const isSlow = speedKnots !== null && speedKnots < 1.0;
+      // COG at very low speed is drift direction, not heading. Suppress.
+      if (isCog && isSlow) {
+        setMetricValue(baseSummary, "Heading", "---", "");
+      } else {
+        setMetricValue(
+          baseSummary,
+          "Heading",
+          Math.round(headingDegrees).toString(),
+          isCog ? "COG" : "deg"
+        );
+      }
+    } else {
+      setMetricValue(baseSummary, "Heading", "---", "");
     }
 
     if (depthFeet !== null) {
@@ -1142,7 +1162,21 @@ async function buildSummary() {
 
     if (waterTempF !== null) {
       baseSummary.weather.waterTemp = `${waterTempF.toFixed(1)} F`;
+    } else {
+      baseSummary.weather.waterTemp = "--";
     }
+  }
+
+  // Zero out mock engine data when no engine gateway is on the N2K bus
+  if (Array.isArray(baseSummary.engines)) {
+    baseSummary.engines = baseSummary.engines.map((e: any) => ({
+      ...e,
+      rpm: 0,
+      gph: 0,
+      tempF: 0,
+      voltage: 0,
+      unavailable: true
+    }));
   }
 
   return {
@@ -1708,6 +1742,35 @@ const server = http.createServer(async (req, res) => {
 
   if (pathname === "/api/camera/status") {
     json(res, 200, dashboardSummary.camera);
+    return;
+  }
+
+  if (pathname === "/api/camera/stream" && req.method === "GET") {
+    const device = process.env.PALMER_LOU_CAMERA_DEVICE ?? "/dev/video0";
+    if (!existsSync(device)) {
+      res.writeHead(503, { "Content-Type": "text/plain" });
+      res.end("Camera device not found");
+      return;
+    }
+    res.writeHead(200, {
+      "Content-Type": "multipart/x-mixed-replace; boundary=ffmpeg",
+      "Cache-Control": "no-cache, no-store, must-revalidate",
+      "Connection": "close"
+    });
+    const ff = spawn("ffmpeg", [
+      "-f", "v4l2",
+      "-framerate", "30",
+      "-i", device,
+      "-vf", "scale=960:-2",
+      "-f", "mpjpeg",
+      "-q:v", "8",
+      "-"
+    ], { stdio: ["ignore", "pipe", "ignore"] });
+    ff.stdout.pipe(res);
+    const cleanup = () => { try { ff.kill(); } catch { /* already gone */ } };
+    req.on("close", cleanup);
+    req.on("error", cleanup);
+    ff.on("error", cleanup);
     return;
   }
 

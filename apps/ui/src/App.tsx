@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { BootSplash } from "./components/BootSplash";
 import { CameraPanel } from "./components/CameraPanel";
 import { DepthTempGraph } from "./components/DepthTempGraph";
@@ -19,15 +19,11 @@ import {
 } from "./lib/trips";
 import {
   loadOceanBuoys,
-  loadOceanCurrentVectors,
   loadStormRadarFrame,
-  loadTrips,
-  loadWeatherForecast,
   loadBluetoothState,
   loadLauncherState,
   loadRemoteAccessStatus,
   loadRemoteUpdateStatus,
-  loadHomePortConfig,
   loadSummary,
   loadSystemTime,
   loadVersionStatus,
@@ -44,27 +40,23 @@ import {
   sendRemoteTypeRequest,
   sendRemoteTunnelAction,
   sendReturnHomeRequest,
-  saveHomePortConfig,
   disconnectWifiNetwork,
   joinWifiNetwork
 } from "./lib/api";
-import { Circle, CircleMarker, MapContainer, Polygon, Polyline, Popup, TileLayer, Tooltip, WMSTileLayer, useMap, useMapEvents } from "react-leaflet";
+import { Circle, CircleMarker, MapContainer, Polygon, Polyline, Popup, TileLayer, Tooltip, useMap, useMapEvents } from "react-leaflet";
 import type {
   AllSpeciesIntelResponse,
   BluetoothDiagnostics,
   BluetoothState,
   DashboardSummary,
-  EngineBreadcrumbSnapshot,
   FishingAdvisorResponse,
   FishingCatch,
   LauncherState,
   OceanBuoyObservation,
-  OceanCurrentVector,
   RemoteAccessStatus,
   RemoteUpdateStatus,
   SpeciesIntelEntry,
   TripDescriptor,
-  WeatherForecastCard,
   WifiNetwork
 } from "./types";
 
@@ -72,8 +64,6 @@ const FISHING_LOG_STORAGE_KEY = "palmer-lou-fishing-catches";
 const HOME_TILE_LAYOUT_STORAGE_KEY = "palmer-lou-home-tile-layout";
 const CUSTOM_BAIT_PRESETS_STORAGE_KEY = "palmer-lou-custom-bait-presets";
 const FISHING_MAP_PREFS_STORAGE_KEY = "palmer-lou-fishing-map-prefs";
-const OCEAN_CURRENT_VECTOR_CACHE_STORAGE_KEY = "palmer-lou-ocean-current-vectors-cache";
-const LAST_VESSEL_POSITION_STORAGE_KEY = "palmer-lou-last-vessel-position";
 const TRIP_LOG_STORAGE_KEY = "palmer-lou-trip-log";
 const pelagicSpecies = ["Tuna", "Billfish", "Swordfish", "Kingfish", "Wahoo", "Mahi Mahi"];
 const BAIT_TYPE_FILTERS = ["All types", "Live bait", "Artificial", "Trolling", "Jigging"] as const;
@@ -84,7 +74,6 @@ type HomeTileId = typeof HOME_TILE_IDS[number];
 type BaitType = Exclude<(typeof BAIT_TYPE_FILTERS)[number], "All types">;
 type BaitColor = Exclude<(typeof BAIT_COLOR_FILTERS)[number], "All colors">;
 type RemoteControlAction = "up" | "down" | "left" | "right" | "select" | "back" | "home" | "playpause" | "volup" | "voldown" | "mute" | "backspace";
-type MapHeadingMode = "north" | "course";
 
 type BaitPreset = {
   id: string;
@@ -105,63 +94,8 @@ type SpeciesFishProfile = {
 
 const DEFAULT_HOME_TILE_LAYOUT: HomeTileId[] = ["speed", "heading", "depth", "water-temp", "clock", "camera"];
 const TRIP_HOME_RADIUS_STORAGE_KEY = "palmer-lou-trip-home-radius-nm";
-const HOME_PORT_CONFIG_STORAGE_KEY = "palmer-lou-home-port-config";
-const REMOTE_HAPTICS_ENABLED_STORAGE_KEY = "palmer-lou-remote-haptics-enabled";
-const REMOTE_TRACKPAD_SENSITIVITY_STORAGE_KEY = "palmer-lou-remote-trackpad-sensitivity";
 const DEFAULT_TRIP_HOME_RADIUS_NM = 0.15;
 const REMOTE_ACCESS_PATH = "/?remote=1";
-const REMOTE_HOLD_INITIAL_DELAY_MS = 260;
-const REMOTE_HOLD_REPEAT_MS = 115;
-const REMOTE_TRACKPAD_DRAG_STEP_PX = 5;
-const REMOTE_TRACKPAD_TAP_MAX_TRAVEL_PX = 10;
-const REMOTE_TRACKPAD_TAP_MAX_MS = 260;
-const BILGEBUDDY_EMBED_URL = "https://app.bilgebuddy.io/";
-const WEATHER_RADAR_MAX_NATIVE_ZOOM = 8;
-const WEATHER_RADAR_MAX_ZOOM = 14;
-const WEATHER_RADAR_WMS_URL = "https://mesonet.agron.iastate.edu/cgi-bin/wms/nexrad/n0r-t.cgi";
-const WEATHER_RADAR_WMS_LAYER = "nexrad-n0r-wmst";
-const WEATHER_RANGE_RINGS_NM = [10, 20, 40, 80] as const;
-
-function projectPointByCourse(lat: number, lon: number, headingDegrees: number, distanceNm: number) {
-  const headingRad = (headingDegrees * Math.PI) / 180;
-  const latDelta = (distanceNm / 60) * Math.cos(headingRad);
-  const cosLat = Math.cos((lat * Math.PI) / 180);
-  const lngScale = Math.max(0.15, Math.abs(cosLat));
-  const lngDelta = ((distanceNm / 60) * Math.sin(headingRad)) / lngScale;
-
-  return {
-    latitude: lat + latDelta,
-    longitude: lon + lngDelta
-  };
-}
-
-function readCachedOceanCurrentVectors() {
-  if (typeof window === "undefined") {
-    return [] as OceanCurrentVector[];
-  }
-
-  try {
-    const raw = window.localStorage.getItem(OCEAN_CURRENT_VECTOR_CACHE_STORAGE_KEY);
-    if (!raw) {
-      return [] as OceanCurrentVector[];
-    }
-
-    const parsed = JSON.parse(raw) as OceanCurrentVector[];
-    if (!Array.isArray(parsed)) {
-      return [] as OceanCurrentVector[];
-    }
-
-    return parsed.filter((item) => {
-      return Number.isFinite(item.latitude)
-        && Number.isFinite(item.longitude)
-        && Number.isFinite(item.speedKnots)
-        && Number.isFinite(item.directionDegrees)
-        && typeof item.observedAt === "string";
-    });
-  } catch {
-    return [] as OceanCurrentVector[];
-  }
-}
 
 function isRemoteModeUrl() {
   if (typeof window === "undefined") {
@@ -173,126 +107,22 @@ function isRemoteModeUrl() {
   return window.location.pathname.startsWith("/remote") || flag === "1" || flag === "true";
 }
 
-function readHomePortConfig() {
-  const fallbackRadius = (() => {
-    if (typeof window === "undefined") {
-      return DEFAULT_TRIP_HOME_RADIUS_NM;
-    }
-
-    const rawLegacyRadius = window.localStorage.getItem(TRIP_HOME_RADIUS_STORAGE_KEY);
-    const parsedLegacyRadius = rawLegacyRadius === null || rawLegacyRadius === undefined || rawLegacyRadius === ""
-      ? Number.NaN
-      : Number.parseFloat(rawLegacyRadius);
-    if (!Number.isFinite(parsedLegacyRadius) || parsedLegacyRadius <= 0) {
-      return DEFAULT_TRIP_HOME_RADIUS_NM;
-    }
-
-    return Math.min(Math.max(parsedLegacyRadius, 0.05), 2.5);
-  })();
-
+function readTripHomeRadius(): number {
   if (typeof window === "undefined") {
-    return {
-      latitude: null as number | null,
-      longitude: null as number | null,
-      radiusNm: fallbackRadius
-    };
+    return DEFAULT_TRIP_HOME_RADIUS_NM;
   }
 
-  const raw = window.localStorage.getItem(HOME_PORT_CONFIG_STORAGE_KEY);
-  if (!raw) {
-    return {
-      latitude: null as number | null,
-      longitude: null as number | null,
-      radiusNm: fallbackRadius
-    };
+  const raw = window.localStorage.getItem(TRIP_HOME_RADIUS_STORAGE_KEY);
+  if (raw === null || raw === undefined || raw === "") {
+    return DEFAULT_TRIP_HOME_RADIUS_NM;
   }
 
-  try {
-    const parsed = JSON.parse(raw) as { latitude?: unknown; longitude?: unknown; radiusNm?: unknown };
-    const latitude = typeof parsed.latitude === "number" && Number.isFinite(parsed.latitude) ? parsed.latitude : null;
-    const longitude = typeof parsed.longitude === "number" && Number.isFinite(parsed.longitude) ? parsed.longitude : null;
-    const parsedRadius = typeof parsed.radiusNm === "number" && Number.isFinite(parsed.radiusNm)
-      ? parsed.radiusNm
-      : fallbackRadius;
-    const radiusNm = Math.min(Math.max(parsedRadius, 0.05), 2.5);
-
-    return {
-      latitude,
-      longitude,
-      radiusNm
-    };
-  } catch {
-    return {
-      latitude: null as number | null,
-      longitude: null as number | null,
-      radiusNm: fallbackRadius
-    };
-  }
-}
-
-function toHomePortLabel(point: { latitude: number; longitude: number } | null) {
-  if (!point) {
-    return "Not configured";
+  const parsed = Number.parseFloat(raw);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return DEFAULT_TRIP_HOME_RADIUS_NM;
   }
 
-  return `${point.latitude.toFixed(5)}, ${point.longitude.toFixed(5)}`;
-}
-
-function readRemoteHapticsEnabled(): boolean {
-  if (typeof window === "undefined") {
-    return false;
-  }
-
-  return window.localStorage.getItem(REMOTE_HAPTICS_ENABLED_STORAGE_KEY) === "1";
-}
-
-function readLastVesselPosition(): { latitude: number; longitude: number } | null {
-  if (typeof window === "undefined") {
-    return null;
-  }
-
-  const raw = window.localStorage.getItem(LAST_VESSEL_POSITION_STORAGE_KEY);
-  if (!raw) {
-    return null;
-  }
-
-  try {
-    const parsed = JSON.parse(raw) as { latitude?: unknown; longitude?: unknown; updatedAt?: unknown };
-    if (typeof parsed.latitude === "number" && typeof parsed.longitude === "number" && Number.isFinite(parsed.latitude) && Number.isFinite(parsed.longitude)) {
-      if (typeof parsed.updatedAt !== "string") {
-        return null;
-      }
-
-      const updatedAtMs = Date.parse(parsed.updatedAt);
-      if (!Number.isFinite(updatedAtMs)) {
-        return null;
-      }
-
-      // Ignore stale coordinates so old sessions do not force incorrect map centers.
-      if (Date.now() - updatedAtMs > (1000 * 60 * 60 * 18)) {
-        return null;
-      }
-
-      return { latitude: parsed.latitude, longitude: parsed.longitude };
-    }
-  } catch {
-    return null;
-  }
-
-  return null;
-}
-
-function readTrackpadSensitivity(): TrackpadSensitivity {
-  if (typeof window === "undefined") {
-    return "normal";
-  }
-
-  const stored = window.localStorage.getItem(REMOTE_TRACKPAD_SENSITIVITY_STORAGE_KEY);
-  if (stored === "fine" || stored === "normal" || stored === "fast") {
-    return stored;
-  }
-
-  return "normal";
+  return Math.min(Math.max(parsed, 0.05), 2.5);
 }
 
 const BAIT_PRESETS: BaitPreset[] = [
@@ -366,18 +196,6 @@ const SPECIES_FRONT_PREFERENCE: Record<string, { sst: number; convergence: numbe
   "Mahi Mahi": { sst: 0.92, convergence: 1.08 }
 };
 
-const SPECIES_MIN_OFFSHORE_NM: Record<string, number> = {
-  tuna: 22,
-  billfish: 30,
-  swordfish: 32,
-  kingfish: 8,
-  wahoo: 30,
-  "mahi mahi": 16,
-  yellowfin: 24,
-  marlin: 32,
-  sailfish: 24
-};
-
 type LaunchTarget = {
   id: string;
   name: string;
@@ -408,8 +226,6 @@ type FishingBasemap = "nautical" | "standard" | "satellite";
 type OceanOverlayId = "sst" | "chlorophyll" | "currents" | "contours" | "fronts";
 type OceanTileOverlayId = "sst" | "chlorophyll" | "currents";
 type FishingSubview = "map" | "logbook";
-type FishingMapMode = "navigate" | "hunt";
-type VesselSubview = "systems" | "myvessel" | "bilgebuddy";
 type SettingsSubview = "bluetooth" | "wifi" | "remote" | "updates";
 
 type FishMappingCircle = {
@@ -424,13 +240,6 @@ type FishMappingCircle = {
   supportingCount: number;
   points: [number, number][];
 };
-
-type TrackpadPoint = {
-  x: number;
-  y: number;
-};
-
-type TrackpadSensitivity = "fine" | "normal" | "fast";
 
 type GeoPoint = {
   latitude: number;
@@ -477,23 +286,6 @@ const LAND_POLYGONS: Array<[number, number][]> = [
     [29.2, -95.4],
     [29.6, -97.2],
     [30.2, -97.8]
-  ]
-];
-
-const INSHORE_WATER_POLYGONS: Array<[number, number][]> = [
-  // Pamlico + Albemarle Sound (approximate envelope)
-  [
-    [36.55, -76.55],
-    [36.42, -75.95],
-    [36.08, -75.68],
-    [35.70, -75.56],
-    [35.26, -75.57],
-    [35.02, -75.72],
-    [34.96, -76.20],
-    [35.10, -76.75],
-    [35.55, -76.95],
-    [36.15, -76.90],
-    [36.55, -76.55]
   ]
 ];
 
@@ -554,21 +346,12 @@ function isLikelyLand(point: GeoPoint) {
   return false;
 }
 
-function isLikelyInshoreWater(point: GeoPoint) {
-  return INSHORE_WATER_POLYGONS.some((polygon) => pointInPolygon(point, polygon));
-}
-
-function isLikelyNearshoreInvalid(point: GeoPoint) {
-  return isLikelyLand(point) || isLikelyInshoreWater(point);
-}
-
 function pushPointOffshore(point: GeoPoint, anchors: Array<{ latitude: number; longitude: number }>) {
-  if (!isLikelyNearshoreInvalid(point)) {
+  if (!isLikelyLand(point)) {
     return point;
   }
 
   const anchor = anchors
-    .filter((entry) => !isLikelyNearshoreInvalid({ latitude: entry.latitude, longitude: entry.longitude }))
     .map((entry) => ({
       ...entry,
       distance: Math.hypot(entry.latitude - point.latitude, entry.longitude - point.longitude)
@@ -582,52 +365,7 @@ function pushPointOffshore(point: GeoPoint, anchors: Array<{ latitude: number; l
     };
   }
 
-  const coastLon = atlanticCoastMinLon(point.latitude);
-  if (coastLon !== null) {
-    const lngPerNm = 1 / (60 * Math.max(0.1, Math.cos((point.latitude * Math.PI) / 180)));
-    return {
-      latitude: point.latitude,
-      longitude: coastLon + (15 * lngPerNm)
-    };
-  }
-
   return point;
-}
-
-function minOffshoreNmForSpecies(species: string) {
-  const normalized = species.trim().toLowerCase();
-  return SPECIES_MIN_OFFSHORE_NM[normalized] ?? 12;
-}
-
-function offshoreDistanceFromAtlanticCoastNm(point: GeoPoint): number | null {
-  const minLon = atlanticCoastMinLon(point.latitude);
-  if (minLon === null) {
-    return null;
-  }
-
-  const lngPerNm = 1 / (60 * Math.max(0.1, Math.cos((point.latitude * Math.PI) / 180)));
-  return Math.max(0, (point.longitude - minLon) / lngPerNm);
-}
-
-function enforceSpeciesOffshoreBuffer(point: GeoPoint, species: string, anchors: Array<{ latitude: number; longitude: number }>) {
-  const pushed = pushPointOffshore(point, anchors);
-  const requiredNm = minOffshoreNmForSpecies(species);
-  const offshoreNm = offshoreDistanceFromAtlanticCoastNm(pushed);
-
-  if (offshoreNm === null || offshoreNm >= requiredNm) {
-    return pushed;
-  }
-
-  const coastLon = atlanticCoastMinLon(pushed.latitude);
-  if (coastLon === null) {
-    return pushed;
-  }
-
-  const lngPerNm = 1 / (60 * Math.max(0.1, Math.cos((pushed.latitude * Math.PI) / 180)));
-  return {
-    latitude: pushed.latitude,
-    longitude: coastLon + (requiredNm * lngPerNm)
-  };
 }
 
 function buildMarineFronts(centerLat: number, centerLng: number, species: string) {
@@ -683,6 +421,7 @@ type FishingMapPrefs = {
   mapDateFilter: "all" | "7d" | "30d" | "90d";
   viewMode: FishingMapViewMode;
   basemap: FishingBasemap;
+  overlayDate: string;
   overlayOpacity: number;
   overlays: Record<OceanOverlayId, boolean>;
 };
@@ -691,11 +430,32 @@ function BrandGlyph({ logoPath, className }: { logoPath: string; className: stri
   return <img src={assetUrl(logoPath)} alt="" className={className} loading="lazy" decoding="async" />;
 }
 
+function TripRouteViewport({ target }: { target: [number, number] }) {
+  const map = useMap();
+  const userMovedRef = useRef(false);
+  const lastTargetRef = useRef<[number, number] | null>(null);
+
+  useMapEvents({
+    dragstart: () => { userMovedRef.current = true; },
+    zoomstart: () => { userMovedRef.current = true; }
+  });
+
+  useEffect(() => {
+    if (userMovedRef.current) return;
+    const [lat, lng] = target;
+    const last = lastTargetRef.current;
+    if (last && Math.abs(last[0] - lat) < 1e-6 && Math.abs(last[1] - lng) < 1e-6) return;
+    lastTargetRef.current = [lat, lng];
+    map.setView([lat, lng], map.getZoom(), { animate: true });
+  }, [target, map]);
+
+  return null;
+}
+
 function FishingMapViewport({ points, currentPosition }: { points: FishingMapPoint[]; currentPosition: { latitude: number; longitude: number } | null }) {
   const map = useMap();
   const hasInitializedRef = useRef(false);
   const userMovedRef = useRef(false);
-  const lastCenteredPositionRef = useRef<{ latitude: number; longitude: number } | null>(null);
 
   useMapEvents({
     dragstart: () => {
@@ -707,21 +467,13 @@ function FishingMapViewport({ points, currentPosition }: { points: FishingMapPoi
   });
 
   useEffect(() => {
-    if (currentPosition) {
-      const last = lastCenteredPositionRef.current;
-      const movedEnough = !last || Math.hypot(last.latitude - currentPosition.latitude, last.longitude - currentPosition.longitude) >= 0.0012;
-      const shouldCenterOnVessel = !hasInitializedRef.current || (!userMovedRef.current && movedEnough);
-
-      if (shouldCenterOnVessel) {
-        map.setView([currentPosition.latitude, currentPosition.longitude], 8, { animate: false });
-        hasInitializedRef.current = true;
-        lastCenteredPositionRef.current = { latitude: currentPosition.latitude, longitude: currentPosition.longitude };
-      }
-
+    if (hasInitializedRef.current || userMovedRef.current) {
       return;
     }
 
-    if (hasInitializedRef.current || userMovedRef.current) {
+    if (currentPosition) {
+      map.setView([currentPosition.latitude, currentPosition.longitude], 8, { animate: false });
+      hasInitializedRef.current = true;
       return;
     }
 
@@ -757,47 +509,24 @@ function FishingMapViewport({ points, currentPosition }: { points: FishingMapPoi
   return null;
 }
 
-function FishingIntelViewport({ circles, currentPosition }: { circles: FishMappingCircle[]; currentPosition: { latitude: number; longitude: number } | null }) {
+function FishingIntelViewport({ circles }: { circles: FishMappingCircle[] }) {
   const map = useMap();
   const hasFittedRef = useRef(false);
-  const lastCountRef = useRef(0);
-  const userMovedRef = useRef(false);
-
-  useMapEvents({
-    dragstart: () => {
-      userMovedRef.current = true;
-    },
-    zoomstart: () => {
-      userMovedRef.current = true;
-    }
-  });
 
   useEffect(() => {
-    if (currentPosition) {
+    // Only auto-fit once when circles first arrive; never override a user pan/zoom
+    if (hasFittedRef.current || circles.length === 0) {
       return;
     }
-
-    if (circles.length === 0) {
-      lastCountRef.current = 0;
-      return;
-    }
-
-    const shouldFit = !hasFittedRef.current
-      || (!userMovedRef.current && circles.length > lastCountRef.current);
-    if (!shouldFit) {
-      return;
-    }
-
     hasFittedRef.current = true;
-    lastCountRef.current = circles.length;
     const lats = circles.map((c) => c.latitude);
     const lngs = circles.map((c) => c.longitude);
     const pad = 0.8;
     map.fitBounds(
       [[Math.min(...lats) - pad, Math.min(...lngs) - pad], [Math.max(...lats) + pad, Math.max(...lngs) + pad]],
-      { animate: true, padding: [48, 48], maxZoom: 10 }
+      { animate: true, padding: [48, 48], maxZoom: 9 }
     );
-  }, [circles, currentPosition, map]);
+  }, [circles, map]);
 
   return null;
 }
@@ -1027,77 +756,6 @@ function FishingMapBoundsReporter({
   return null;
 }
 
-function FishingMapZoomReporter({
-  onZoomChange
-}: {
-  onZoomChange: (zoom: number) => void;
-}) {
-  const map = useMapEvents({
-    zoomend: () => {
-      onZoomChange(map.getZoom());
-    }
-  });
-
-  useEffect(() => {
-    onZoomChange(map.getZoom());
-  }, [map, onZoomChange]);
-
-  return null;
-}
-
-function MapCenterReporter({
-  onCenterChange
-}: {
-  onCenterChange: (center: [number, number]) => void;
-}) {
-  const map = useMapEvents({
-    moveend: () => {
-      const center = map.getCenter();
-      onCenterChange([center.lat, center.lng]);
-    },
-    zoomend: () => {
-      const center = map.getCenter();
-      onCenterChange([center.lat, center.lng]);
-    }
-  });
-
-  useEffect(() => {
-    const center = map.getCenter();
-    onCenterChange([center.lat, center.lng]);
-  }, [map, onCenterChange]);
-
-  return null;
-}
-
-function HomePortConfigMapInteractions({
-  onPick,
-  onCenterChange
-}: {
-  onPick: (position: { latitude: number; longitude: number }) => void;
-  onCenterChange: (center: [number, number]) => void;
-}) {
-  const map = useMapEvents({
-    click: (event) => {
-      onPick({ latitude: event.latlng.lat, longitude: event.latlng.lng });
-    },
-    moveend: () => {
-      const center = map.getCenter();
-      onCenterChange([center.lat, center.lng]);
-    },
-    zoomend: () => {
-      const center = map.getCenter();
-      onCenterChange([center.lat, center.lng]);
-    }
-  });
-
-  useEffect(() => {
-    const center = map.getCenter();
-    onCenterChange([center.lat, center.lng]);
-  }, [map, onCenterChange]);
-
-  return null;
-}
-
 function FishingMapRuntimeGuard() {
   const map = useMap();
 
@@ -1129,127 +787,24 @@ function FishingMapRuntimeGuard() {
   return null;
 }
 
-function WeatherRadarRuntimeGuard({ center }: { center: [number, number] }) {
-  const map = useMap();
-  const hasInitializedRef = useRef(false);
-  const userMovedRef = useRef(false);
-
-  useMapEvents({
-    dragstart: () => {
-      userMovedRef.current = true;
-    },
-    zoomstart: () => {
-      userMovedRef.current = true;
-    }
-  });
-
-  useEffect(() => {
-    if (!hasInitializedRef.current) {
-      map.setView(center, map.getZoom(), { animate: false });
-      hasInitializedRef.current = true;
-    } else if (!userMovedRef.current) {
-      const current = map.getCenter();
-      const movedEnough = Math.hypot(current.lat - center[0], current.lng - center[1]) >= 0.002;
-      if (movedEnough) {
-        map.setView(center, map.getZoom(), { animate: false });
-      }
-    }
-
-    map.invalidateSize(false);
-  }, [center, map]);
-
-  useEffect(() => {
-    let cancelled = false;
-    const settle = () => {
-      if (!cancelled) {
-        map.invalidateSize(false);
-      }
-    };
-
-    const timers = [90, 260, 700, 1500].map((delay) => window.setTimeout(settle, delay));
-    const onResize = () => settle();
-    window.addEventListener("resize", onResize);
-
-    return () => {
-      cancelled = true;
-      timers.forEach((timer) => window.clearTimeout(timer));
-      window.removeEventListener("resize", onResize);
-    };
-  }, [map]);
-
-  return null;
-}
-
-function TripRouteViewport({
-  routePoints,
-  currentPosition
-}: {
-  routePoints: [number, number][];
-  currentPosition: { latitude: number; longitude: number } | null;
-}) {
-  const map = useMap();
-  const hasInitializedRef = useRef(false);
-  const userMovedRef = useRef(false);
-
-  useMapEvents({
-    dragstart: () => {
-      userMovedRef.current = true;
-    },
-    zoomstart: () => {
-      userMovedRef.current = true;
-    }
-  });
-
-  useEffect(() => {
-    if (userMovedRef.current) {
-      return;
-    }
-
-    if (routePoints.length > 1) {
-      const latitudes = routePoints.map((point) => point[0]);
-      const longitudes = routePoints.map((point) => point[1]);
-      map.fitBounds(
-        [[Math.min(...latitudes), Math.min(...longitudes)], [Math.max(...latitudes), Math.max(...longitudes)]],
-        { animate: false, padding: [28, 28], maxZoom: 14 }
-      );
-      hasInitializedRef.current = true;
-      return;
-    }
-
-    if (routePoints.length === 1) {
-      const point = routePoints[0];
-      if (point) {
-        map.setView(point, 11, { animate: false });
-        hasInitializedRef.current = true;
-      }
-      return;
-    }
-
-    if (currentPosition && !hasInitializedRef.current) {
-      map.setView([currentPosition.latitude, currentPosition.longitude], 8, { animate: false });
-      hasInitializedRef.current = true;
-    }
-  }, [currentPosition, map, routePoints]);
-
-  return null;
-}
-
 function buildOceanOverlayUrl(source: OceanTileOverlayId, date: string) {
   return `/api/ocean/tiles/${source}/{z}/{x}/{y}.png?date=${encodeURIComponent(date)}`;
 }
 
 function readFishingMapPrefs(): FishingMapPrefs {
+  const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
   const defaults: FishingMapPrefs = {
     mapDateFilter: "7d",
     viewMode: "clusters",
     basemap: "nautical",
-    overlayOpacity: 34,
+    overlayDate: yesterday,
+    overlayOpacity: 56,
     overlays: {
-      sst: false,
+      sst: true,
       chlorophyll: false,
       currents: false,
       contours: true,
-      fronts: false
+      fronts: true
     }
   };
 
@@ -1260,34 +815,6 @@ function readFishingMapPrefs(): FishingMapPrefs {
 
   try {
     const parsed = JSON.parse(raw) as Partial<FishingMapPrefs>;
-    const parsedOverlays = {
-      sst: typeof parsed.overlays?.sst === "boolean" ? parsed.overlays.sst : defaults.overlays.sst,
-      chlorophyll: false,
-      currents: typeof parsed.overlays?.currents === "boolean" ? parsed.overlays.currents : defaults.overlays.currents,
-      contours: typeof parsed.overlays?.contours === "boolean" ? parsed.overlays.contours : defaults.overlays.contours,
-      fronts: typeof parsed.overlays?.fronts === "boolean" ? parsed.overlays.fronts : defaults.overlays.fronts
-    };
-
-    const enabledCount = [
-      parsedOverlays.sst,
-      parsedOverlays.chlorophyll,
-      parsedOverlays.currents,
-      parsedOverlays.contours,
-      parsedOverlays.fronts
-    ].filter(Boolean).length;
-
-    const useCleanedOverlays = enabledCount >= 4;
-    const isLegacyGrainyBlend = parsedOverlays.sst
-      && parsedOverlays.contours
-      && !parsedOverlays.chlorophyll
-      && !parsedOverlays.currents
-      && !parsedOverlays.fronts
-      && typeof parsed.overlayOpacity === "number"
-      && parsed.overlayOpacity >= 30;
-    const normalizedOverlays = useCleanedOverlays || isLegacyGrainyBlend
-      ? defaults.overlays
-      : parsedOverlays;
-
     return {
       mapDateFilter: parsed.mapDateFilter === "all" || parsed.mapDateFilter === "7d" || parsed.mapDateFilter === "30d" || parsed.mapDateFilter === "90d"
         ? parsed.mapDateFilter
@@ -1298,10 +825,19 @@ function readFishingMapPrefs(): FishingMapPrefs {
       basemap: parsed.basemap === "nautical" || parsed.basemap === "standard" || parsed.basemap === "satellite"
         ? parsed.basemap
         : defaults.basemap,
+      overlayDate: typeof parsed.overlayDate === "string" && /^\d{4}-\d{2}-\d{2}$/.test(parsed.overlayDate)
+        ? parsed.overlayDate
+        : defaults.overlayDate,
       overlayOpacity: typeof parsed.overlayOpacity === "number" && parsed.overlayOpacity >= 15 && parsed.overlayOpacity <= 95
-        ? ((useCleanedOverlays || isLegacyGrainyBlend) ? Math.min(parsed.overlayOpacity, 34) : parsed.overlayOpacity)
+        ? parsed.overlayOpacity
         : defaults.overlayOpacity,
-      overlays: normalizedOverlays
+      overlays: {
+        sst: typeof parsed.overlays?.sst === "boolean" ? parsed.overlays.sst : defaults.overlays.sst,
+        chlorophyll: typeof parsed.overlays?.chlorophyll === "boolean" ? parsed.overlays.chlorophyll : defaults.overlays.chlorophyll,
+        currents: typeof parsed.overlays?.currents === "boolean" ? parsed.overlays.currents : defaults.overlays.currents,
+        contours: typeof parsed.overlays?.contours === "boolean" ? parsed.overlays.contours : defaults.overlays.contours,
+        fronts: typeof parsed.overlays?.fronts === "boolean" ? parsed.overlays.fronts : defaults.overlays.fronts
+      }
     };
   } catch {
     return defaults;
@@ -1533,15 +1069,6 @@ const musicTargets: LaunchTarget[] = [
   }
 ];
 
-function findLaunchTargetById(appId: string): LaunchTarget | null {
-  const normalized = appId.trim().toLowerCase();
-  if (!normalized) {
-    return null;
-  }
-
-  return [...streamingTargets, ...musicTargets].find((target) => target.id === normalized) ?? null;
-}
-
 function formatSystemClock(iso: string) {
   return new Intl.DateTimeFormat("en-US", {
     weekday: "short",
@@ -1644,35 +1171,10 @@ function geoBearingLabel(lat1: number, lon1: number, lat2: number, lon2: number)
   return dirs[Math.round(deg / 22.5) % 16] ?? "?";
 }
 
-function interpolatePoint(a: [number, number], b: [number, number], t: number): [number, number] {
-  return [a[0] + ((b[0] - a[0]) * t), a[1] + ((b[1] - a[1]) * t)];
-}
-
-function offsetPointByNm(point: [number, number], eastNm: number, northNm: number): [number, number] {
-  const lat = point[0];
-  const latOffset = northNm / 60;
-  const lngOffset = eastNm / (60 * Math.max(0.1, Math.cos((lat * Math.PI) / 180)));
-  return [lat + latOffset, point[1] + lngOffset];
-}
-
-function directionAngleRad(a: [number, number], b: [number, number]) {
-  const avgLat = (a[0] + b[0]) / 2;
-  const east = (b[1] - a[1]) * Math.max(0.1, Math.cos((avgLat * Math.PI) / 180));
-  const north = b[0] - a[0];
-  return Math.atan2(north, east);
-}
-
 export function App() {
   const initialFishingMapPrefs = readFishingMapPrefs();
   const remoteMode = isRemoteModeUrl();
   const remoteAccessUrl = typeof window === "undefined" ? REMOTE_ACCESS_PATH : `${window.location.origin}${REMOTE_ACCESS_PATH}`;
-  const signalKAdminUrl = typeof window === "undefined" ? "/admin/#/dashboard" : `${window.location.origin}/admin/#/dashboard`;
-  const compactSettingsTabStyle = {
-    minHeight: "30px",
-    padding: "4px 8px",
-    fontSize: "0.72rem",
-    letterSpacing: "0.05em"
-  };
   const [summary, setSummary] = useState<DashboardSummary | null>(null);
   const [online, setOnline] = useState(true);
   const [selectedAppId, setSelectedAppId] = useState("streaming");
@@ -1706,14 +1208,10 @@ export function App() {
   const [launcherState, setLauncherState] = useState<LauncherState>(() => defaultLauncherState());
   const [launching, setLaunching] = useState(false);
   const [killingLaunchedApp, setKillingLaunchedApp] = useState(false);
-  const [restoringLaunchedApp, setRestoringLaunchedApp] = useState(false);
-  const [lastRestorableAppId, setLastRestorableAppId] = useState("");
   const [showRuntimePanel, setShowRuntimePanel] = useState(false);
   const [selectedNavId, setSelectedNavId] = useState("home");
-  const lastTouchNavSelectionRef = useRef<{ id: string; at: number } | null>(null);
   const [settingsSubview, setSettingsSubview] = useState<SettingsSubview>("wifi");
   const [fishingSubview, setFishingSubview] = useState<FishingSubview>("map");
-  const [fishingMapMode, setFishingMapMode] = useState<FishingMapMode>("navigate");
   const [fishingCatches, setFishingCatches] = useState<FishingCatch[]>(() => readFishingCatches());
   const [quickSpecies, setQuickSpecies] = useState("Yellowfin");
   const [selectedBaitTypeFilter, setSelectedBaitTypeFilter] = useState<(typeof BAIT_TYPE_FILTERS)[number]>("All types");
@@ -1722,7 +1220,6 @@ export function App() {
   const [customBaitPresets, setCustomBaitPresets] = useState<BaitPreset[]>(() => readCustomBaitPresets());
   const [vesselPosition, setVesselPosition] = useState<{ latitude: number; longitude: number } | null>(null);
   const [browserGeoLocation, setBrowserGeoLocation] = useState<[number, number] | null>(null);
-  const [lastKnownVesselPosition, setLastKnownVesselPosition] = useState<{ latitude: number; longitude: number } | null>(() => readLastVesselPosition());
   const [customBaitName, setCustomBaitName] = useState("");
   const [customBaitType, setCustomBaitType] = useState<BaitType>("Live bait");
   const [customBaitColor, setCustomBaitColor] = useState<BaitColor>("Natural");
@@ -1737,15 +1234,14 @@ export function App() {
   const [fishingMapDateFilter, setFishingMapDateFilter] = useState<"all" | "7d" | "30d" | "90d">(initialFishingMapPrefs.mapDateFilter);
   const [fishingMapViewMode, setFishingMapViewMode] = useState<FishingMapViewMode>(initialFishingMapPrefs.viewMode);
   const [fishingBasemap, setFishingBasemap] = useState<FishingBasemap>(initialFishingMapPrefs.basemap);
+  const [fishingMapOverlayDate, setFishingMapOverlayDate] = useState(initialFishingMapPrefs.overlayDate);
   const [fishingMapOverlayOpacity, setFishingMapOverlayOpacity] = useState(initialFishingMapPrefs.overlayOpacity);
   const [enabledOceanOverlays, setEnabledOceanOverlays] = useState<Record<OceanOverlayId, boolean>>(initialFishingMapPrefs.overlays);
-  const [showSpeciesHotspots, setShowSpeciesHotspots] = useState(false);
   const [selectedFishCircleId, setSelectedFishCircleId] = useState<string | null>(null);
   const [fishingMapBounds, setFishingMapBounds] = useState<{ minLat: number; maxLat: number; minLng: number; maxLng: number } | null>(null);
   const [showFishingMapSettings, setShowFishingMapSettings] = useState(false);
   const [fishingMapFullscreen, setFishingMapFullscreen] = useState(false);
   const [fishingMapRenderNonce, setFishingMapRenderNonce] = useState(0);
-  const [fishingMapZoom, setFishingMapZoom] = useState(7);
   const [speciesVisibility, setSpeciesVisibility] = useState<Record<string, boolean>>(() => {
     const defaults: Record<string, boolean> = {};
     pelagicSpecies.forEach((species) => {
@@ -1755,29 +1251,10 @@ export function App() {
   });
   const [oceanBuoys, setOceanBuoys] = useState<OceanBuoyObservation[]>([]);
   const [loadingOceanBuoys, setLoadingOceanBuoys] = useState(false);
-  const [oceanCurrentVectors, setOceanCurrentVectors] = useState<OceanCurrentVector[]>(() => readCachedOceanCurrentVectors());
-  const [loadingOceanCurrentVectors, setLoadingOceanCurrentVectors] = useState(false);
   const [weatherRadarFullscreen, setWeatherRadarFullscreen] = useState(false);
   const [stormRadarTileUrl, setStormRadarTileUrl] = useState<string | null>(null);
-  const [stormRadarPreviousTileUrl, setStormRadarPreviousTileUrl] = useState<string | null>(null);
-  const [stormRadarTimeline, setStormRadarTimeline] = useState<Array<{
-    kind: "past" | "nowcast" | "future";
-    observedAt: string | null;
-    tileUrlTemplate: string;
-  }>>([]);
-  const [stormRadarPlaybackIndex, setStormRadarPlaybackIndex] = useState(0);
-  const [stormRadarPlaying, setStormRadarPlaying] = useState(false);
-  const [weatherMapRenderNonce, setWeatherMapRenderNonce] = useState(0);
-  const [tripMapRenderNonce, setTripMapRenderNonce] = useState(0);
-  const [weatherMapCenter, setWeatherMapCenter] = useState<[number, number] | null>(null);
-  const [tripMapCenter, setTripMapCenter] = useState<[number, number] | null>(null);
   const [stormRadarFrameLabel, setStormRadarFrameLabel] = useState<string | null>(null);
   const [loadingStormRadar, setLoadingStormRadar] = useState(false);
-  const [mapHeadingMode, setMapHeadingMode] = useState<MapHeadingMode>("north");
-  const [tripMapFollowRecent, setTripMapFollowRecent] = useState(false);
-  const [signalKForecastCards, setSignalKForecastCards] = useState<WeatherForecastCard[] | null>(null);
-  const [signalKForecastSource, setSignalKForecastSource] = useState<string | null>(null);
-  const [lastTripSyncAt, setLastTripSyncAt] = useState<string | null>(null);
   const [speciesIntel, setSpeciesIntel] = useState<AllSpeciesIntelResponse | null>(null);
   const [loadingSpeciesIntel, setLoadingSpeciesIntel] = useState(false);
   const [expandedSpeciesIntel, setExpandedSpeciesIntel] = useState<string | null>(null);
@@ -1807,8 +1284,6 @@ export function App() {
   const [remoteControlStatus, setRemoteControlStatus] = useState("Remote controls ready");
   const [showKeyboard, setShowKeyboard] = useState(false);
   const [keyboardShift, setKeyboardShift] = useState(false);
-  const [remoteHapticsEnabled] = useState(() => readRemoteHapticsEnabled());
-  const [trackpadSensitivity, setTrackpadSensitivity] = useState<TrackpadSensitivity>(() => readTrackpadSensitivity());
   const [trendBaseTime] = useState(() => Date.now());
   const [depthTempTrend, setDepthTempTrend] = useState<Array<{ timestamp: string; depthFeet: number | null; waterTempF: number | null }>>([]);
   const [homeTileLayout, setHomeTileLayout] = useState<HomeTileId[]>(() => readHomeTileLayout());
@@ -1816,80 +1291,18 @@ export function App() {
   const [tripHistory, setTripHistory] = useState<TripDescriptor[]>(() => readStoredTrips());
   const [tripSession, setTripSession] = useState<TripLog | null>(null);
   const [selectedTripId, setSelectedTripId] = useState<string | null>(null);
-  const [homePortConfig, setHomePortConfig] = useState(() => readHomePortConfig());
-  const [myVesselMapCenter, setMyVesselMapCenter] = useState<[number, number] | null>(null);
-  const homePortPoint = useMemo(() => {
-    if (typeof homePortConfig.latitude === "number"
-      && typeof homePortConfig.longitude === "number"
-      && Number.isFinite(homePortConfig.latitude)
-      && Number.isFinite(homePortConfig.longitude)) {
-      return {
-        latitude: homePortConfig.latitude,
-        longitude: homePortConfig.longitude
-      };
-    }
-
-    return null;
-  }, [homePortConfig.latitude, homePortConfig.longitude]);
-  const homePortRadiusNm = Math.min(Math.max(homePortConfig.radiusNm, 0.05), 2.5);
-  const homePortLabel = toHomePortLabel(homePortPoint);
+  const [tripHomeRadiusNm, setTripHomeRadiusNm] = useState<number>(() => readTripHomeRadius());
   const [tripMapFullscreen, setTripMapFullscreen] = useState(false);
-  const [tripControlMessage, setTripControlMessage] = useState<string | null>(null);
-  const [vesselSubview, setVesselSubview] = useState<VesselSubview>("systems");
-  const [bilgeBuddyFullscreen, setBilgeBuddyFullscreen] = useState(false);
   const activeTripRef = useRef<TripLog | null>(null);
-  const stormRadarTileUrlRef = useRef<string | null>(null);
-  const stormRadarPlayingRef = useRef(false);
-  const stormRadarPlaybackIndexRef = useRef(0);
-  const remoteControlQueueRef = useRef<Promise<void>>(Promise.resolve());
-  const remoteHoldActionRef = useRef<RemoteControlAction | null>(null);
-  const remoteHoldDelayTimerRef = useRef<number | null>(null);
-  const remoteHoldIntervalTimerRef = useRef<number | null>(null);
-  const trackpadPointerIdRef = useRef<number | null>(null);
-  const trackpadLastPointRef = useRef<TrackpadPoint | null>(null);
-  const trackpadAccumulatorRef = useRef<TrackpadPoint>({ x: 0, y: 0 });
-  const trackpadGestureRef = useRef<{ startedAt: number; movedPx: number }>({ startedAt: 0, movedPx: 0 });
-  const trackpadMoveQueueRef = useRef<TrackpadPoint>({ x: 0, y: 0 });
-  const trackpadMoveSendingRef = useRef(false);
-  const lastTripSampleRef = useRef<{ atMs: number; latitude: number; longitude: number } | null>(null);
   const activeSummary = summary ?? fallbackSummary;
 
   const vibrateRemote = (pattern: number | number[]) => {
-    if (!remoteMode || !remoteHapticsEnabled || typeof navigator === "undefined" || typeof navigator.vibrate !== "function") {
+    if (!remoteMode || typeof navigator === "undefined" || typeof navigator.vibrate !== "function") {
       return;
     }
 
     navigator.vibrate(pattern);
   };
-
-  useEffect(() => {
-    if (typeof window === "undefined") {
-      return;
-    }
-
-    window.localStorage.setItem(REMOTE_HAPTICS_ENABLED_STORAGE_KEY, remoteHapticsEnabled ? "1" : "0");
-  }, [remoteHapticsEnabled]);
-
-  useEffect(() => {
-    if (typeof window === "undefined") {
-      return;
-    }
-
-    window.localStorage.setItem(REMOTE_TRACKPAD_SENSITIVITY_STORAGE_KEY, trackpadSensitivity);
-  }, [trackpadSensitivity]);
-
-  useEffect(() => {
-    if (!vesselPosition || typeof window === "undefined") {
-      return;
-    }
-
-    setLastKnownVesselPosition(vesselPosition);
-    window.localStorage.setItem(LAST_VESSEL_POSITION_STORAGE_KEY, JSON.stringify({
-      latitude: vesselPosition.latitude,
-      longitude: vesselPosition.longitude,
-      updatedAt: new Date().toISOString()
-    }));
-  }, [vesselPosition]);
 
   useEffect(() => {
     if (typeof document === "undefined") {
@@ -1904,22 +1317,6 @@ export function App() {
       document.body.classList.remove("remote-mode");
     };
   }, [remoteMode]);
-
-  useEffect(() => {
-    return () => {
-      if (typeof window === "undefined") {
-        return;
-      }
-
-      if (remoteHoldDelayTimerRef.current !== null) {
-        window.clearTimeout(remoteHoldDelayTimerRef.current);
-      }
-
-      if (remoteHoldIntervalTimerRef.current !== null) {
-        window.clearInterval(remoteHoldIntervalTimerRef.current);
-      }
-    };
-  }, []);
 
   useEffect(() => {
     const shouldShowLauncherOverlay = launcherState.appId.length > 0
@@ -1988,14 +1385,10 @@ export function App() {
     maxEngineTempF: trip.maxEngineTempF,
     averageEngineTempF: trip.averageEngineTempF,
     averageFuelBurnGph: trip.averageFuelBurnGph,
-    breadcrumbs: trip.breadcrumbs,
-    origin: "local"
+    breadcrumbs: trip.breadcrumbs
   });
 
   function buildTripTelemetrySnapshot() {
-    const toFiniteOrNull = (value: unknown) => (typeof value === "number" && Number.isFinite(value) ? value : null);
-    const toStringOrNull = (value: unknown) => (typeof value === "string" && value.trim().length > 0 ? value : null);
-
     const speedKnots = Number.parseFloat((activeSummary?.metrics.find((metric) => metric.label === "Speed")?.value ?? "0")) || null;
     const headingDegrees = Number.parseFloat((activeSummary?.metrics.find((metric) => metric.label === "Heading")?.value ?? "0")) || null;
     const depthFeet = Number.parseFloat((activeSummary?.metrics.find((metric) => metric.label === "Depth")?.value ?? "0")) || null;
@@ -2039,37 +1432,6 @@ export function App() {
       ? Number((voltageValues.reduce((sum, value) => sum + value, 0) / voltageValues.length).toFixed(2))
       : null;
 
-    const engineSnapshots: EngineBreadcrumbSnapshot[] = (activeSummary?.engines ?? []).map((engine) => {
-      const extended = engine as typeof engine & {
-        oilPressurePsi?: unknown;
-        oilTempF?: unknown;
-        coolantTempF?: unknown;
-        trimPercent?: unknown;
-        loadPercent?: unknown;
-        boostPsi?: unknown;
-        alternatorVoltage?: unknown;
-        hours?: unknown;
-        gear?: unknown;
-      };
-
-      return {
-        label: engine.label,
-        rpm: toFiniteOrNull(engine.rpm),
-        gph: toFiniteOrNull(engine.gph),
-        tempF: toFiniteOrNull(engine.tempF),
-        voltage: toFiniteOrNull(engine.voltage),
-        oilPressurePsi: toFiniteOrNull(extended.oilPressurePsi),
-        oilTempF: toFiniteOrNull(extended.oilTempF),
-        coolantTempF: toFiniteOrNull(extended.coolantTempF),
-        trimPercent: toFiniteOrNull(extended.trimPercent),
-        loadPercent: toFiniteOrNull(extended.loadPercent),
-        boostPsi: toFiniteOrNull(extended.boostPsi),
-        alternatorVoltage: toFiniteOrNull(extended.alternatorVoltage),
-        hours: toFiniteOrNull(extended.hours),
-        gear: toStringOrNull(extended.gear)
-      };
-    });
-
     return {
       speedKnots,
       headingDegrees,
@@ -2083,7 +1445,6 @@ export function App() {
       portRpm: portEngine?.rpm ?? null,
       centerRpm: centerEngine?.rpm ?? null,
       starboardRpm: starboardEngine?.rpm ?? null,
-      engineSnapshots,
       wind: activeSummary?.weather.wind ?? "Unknown",
       barometer: activeSummary?.weather.barometer ?? "Unknown",
       networkStatus: activeSummary?.connectivity.network ?? "Unknown",
@@ -2092,121 +1453,48 @@ export function App() {
   }
 
   function startTripSession() {
-    if (activeTripRef.current) {
-      setTripControlMessage("Trip already running");
-      return;
-    }
+    const point = vesselPosition ?? { latitude: 29.5, longitude: -83.2 };
+    const telemetry = buildTripTelemetrySnapshot();
 
-    const beginTripAtPoint = (point: { latitude: number; longitude: number }) => {
-      const telemetry = buildTripTelemetrySnapshot();
+    const nextTrip = startTripLog({
+      latitude: point.latitude,
+      longitude: point.longitude,
+      speedKnots: telemetry.speedKnots,
+      headingDegrees: telemetry.headingDegrees,
+      depthFeet: telemetry.depthFeet,
+      waterTempF: telemetry.waterTempF,
+      engineRpmTotal: telemetry.engineRpmTotal,
+      engineTempAvgF: telemetry.engineTempAvgF,
+      engineTempMaxF: telemetry.engineTempMaxF,
+      fuelBurnGph: telemetry.fuelBurnGph,
+      engineVoltageAvg: telemetry.engineVoltageAvg,
+      portRpm: telemetry.portRpm,
+      centerRpm: telemetry.centerRpm,
+      starboardRpm: telemetry.starboardRpm,
+      wind: telemetry.wind,
+      barometer: telemetry.barometer,
+      networkStatus: telemetry.networkStatus,
+      source: telemetry.source
+    });
 
-      const nextTrip = startTripLog({
-        latitude: point.latitude,
-        longitude: point.longitude,
-        speedKnots: telemetry.speedKnots,
-        headingDegrees: telemetry.headingDegrees,
-        depthFeet: telemetry.depthFeet,
-        waterTempF: telemetry.waterTempF,
-        engineRpmTotal: telemetry.engineRpmTotal,
-        engineTempAvgF: telemetry.engineTempAvgF,
-        engineTempMaxF: telemetry.engineTempMaxF,
-        fuelBurnGph: telemetry.fuelBurnGph,
-        engineVoltageAvg: telemetry.engineVoltageAvg,
-        portRpm: telemetry.portRpm,
-        centerRpm: telemetry.centerRpm,
-        starboardRpm: telemetry.starboardRpm,
-        engineSnapshots: telemetry.engineSnapshots,
-        wind: telemetry.wind,
-        barometer: telemetry.barometer,
-        networkStatus: telemetry.networkStatus,
-        source: telemetry.source
-      });
-
-      activeTripRef.current = nextTrip;
-      setTripSession(nextTrip);
-      setSelectedTripId(nextTrip.id);
-      setTripHistory((current) => [toTripDescriptor(nextTrip), ...current]);
-      setTripControlMessage(`Trip started at ${point.latitude.toFixed(5)}, ${point.longitude.toFixed(5)}`);
-    };
-
-    const chartCenterFallback = tripMapCenter
-      ? { latitude: tripMapCenter[0], longitude: tripMapCenter[1] }
-      : weatherMapCenter
-        ? { latitude: weatherMapCenter[0], longitude: weatherMapCenter[1] }
-        : fishingMapViewportCenter
-          ? { latitude: fishingMapViewportCenter[0], longitude: fishingMapViewportCenter[1] }
-          : fishingMapCenter
-            ? { latitude: fishingMapCenter[0], longitude: fishingMapCenter[1] }
-          : null;
-
-    const point = preferredMapPosition;
-    if (point) {
-      beginTripAtPoint(point);
-      return;
-    }
-
-    if (!navigator.geolocation) {
-      if (chartCenterFallback) {
-        beginTripAtPoint(chartCenterFallback);
-        setTripControlMessage("Trip started from chart center (live GPS/NMEA unavailable)");
-        return;
-      }
-
-      setTripControlMessage("Cannot start trip: position unavailable");
-      return;
-    }
-
-    navigator.geolocation.getCurrentPosition(
-      (position) => {
-        const fallbackPoint = {
-          latitude: position.coords.latitude,
-          longitude: position.coords.longitude
-        };
-
-        setBrowserGeoLocation([fallbackPoint.latitude, fallbackPoint.longitude]);
-        setVesselPosition(fallbackPoint);
-        beginTripAtPoint(fallbackPoint);
-      },
-      () => {
-        if (chartCenterFallback) {
-          beginTripAtPoint(chartCenterFallback);
-          setTripControlMessage("Trip started from chart center (browser geolocation unavailable)");
-          return;
-        }
-
-        setTripControlMessage("Cannot start trip: live position unavailable (GPS/NMEA and browser geolocation not available)");
-      }
-    );
-  }
-
-  function canAutoEndTripAtHome(trip: TripLog | null) {
-    if (!trip) {
-      return false;
-    }
-
-    if (trip.breadcrumbs.length < 3) {
-      return false;
-    }
-
-    if (trip.distanceNm < 0.05) {
-      return false;
-    }
-
-    const startedAtMs = Date.parse(trip.startedAt);
-    if (!Number.isFinite(startedAtMs)) {
-      return false;
-    }
-
-    return Date.now() - startedAtMs >= 120000;
+    activeTripRef.current = nextTrip;
+    setTripSession(nextTrip);
+    setSelectedTripId(nextTrip.id);
+    setTripHistory((current) => [toTripDescriptor(nextTrip), ...current]);
   }
 
   function finishTripAtHome(radiusNm?: number) {
-    if (!activeTripRef.current || !vesselPosition || !homePortPoint) {
+    if (!activeTripRef.current || !vesselPosition) {
       return;
     }
 
-    const safeRadius = radiusNm ?? homePortRadiusNm;
-    const atHome = shouldEndTripAtHome(homePortPoint.latitude, homePortPoint.longitude, vesselPosition.latitude, vesselPosition.longitude, safeRadius);
+    const homePoint = activeTripRef.current.breadcrumbs[0];
+    if (!homePoint) {
+      return;
+    }
+
+    const safeRadius = radiusNm ?? tripHomeRadiusNm;
+    const atHome = shouldEndTripAtHome(homePoint.latitude, homePoint.longitude, vesselPosition.latitude, vesselPosition.longitude, safeRadius);
     if (!atHome) {
       return;
     }
@@ -2224,89 +1512,7 @@ export function App() {
     setTripSession(null);
     setSelectedTripId(finalized.id);
     setTripHistory((current) => [toTripDescriptor(finalized), ...current.filter((trip) => trip.id !== finalized.id)]);
-    setTripControlMessage("Trip stopped and saved");
   }
-
-  function deleteSavedTrip(tripId: string) {
-    if (!tripId) {
-      return;
-    }
-
-    const selected = tripHistory.find((trip) => trip.id === tripId);
-    if (selected && (selected.origin ?? "local") !== "local") {
-      setTripControlMessage("Cruise Report trips are read-only in this view.");
-      return;
-    }
-
-    if (tripSession?.id === tripId) {
-      setTripControlMessage("Stop the active trip before deleting it.");
-      return;
-    }
-
-    setTripHistory((current) => current.filter((trip) => trip.id !== tripId));
-    setSelectedTripId((current) => (current === tripId ? (tripSession?.id ?? null) : current));
-    setTripControlMessage("Saved trip deleted");
-  }
-
-  const appendActiveTripSample = useCallback((position: { latitude: number; longitude: number }) => {
-    if (!activeTripRef.current) {
-      return;
-    }
-
-    const nowMs = Date.now();
-    const lastSample = lastTripSampleRef.current;
-    if (lastSample) {
-      const elapsedMs = nowMs - lastSample.atMs;
-      const movementDelta = Math.hypot(position.latitude - lastSample.latitude, position.longitude - lastSample.longitude);
-      if (elapsedMs < 2500 && movementDelta < 0.00003) {
-        return;
-      }
-    }
-
-    const telemetry = buildTripTelemetrySnapshot();
-
-    const updatedTrip = appendTripBreadcrumb(activeTripRef.current, {
-      latitude: position.latitude,
-      longitude: position.longitude,
-      speedKnots: telemetry.speedKnots,
-      headingDegrees: telemetry.headingDegrees,
-      depthFeet: telemetry.depthFeet,
-      waterTempF: telemetry.waterTempF,
-      engineRpmTotal: telemetry.engineRpmTotal,
-      engineTempAvgF: telemetry.engineTempAvgF,
-      engineTempMaxF: telemetry.engineTempMaxF,
-      fuelBurnGph: telemetry.fuelBurnGph,
-      engineVoltageAvg: telemetry.engineVoltageAvg,
-      portRpm: telemetry.portRpm,
-      centerRpm: telemetry.centerRpm,
-      starboardRpm: telemetry.starboardRpm,
-      engineSnapshots: telemetry.engineSnapshots,
-      wind: telemetry.wind,
-      barometer: telemetry.barometer,
-      networkStatus: telemetry.networkStatus,
-      source: telemetry.source
-    });
-
-    lastTripSampleRef.current = {
-      atMs: nowMs,
-      latitude: position.latitude,
-      longitude: position.longitude
-    };
-
-    activeTripRef.current = updatedTrip;
-    setTripSession(updatedTrip);
-    setSelectedTripId(updatedTrip.id);
-    setTripHistory((current) => [
-      toTripDescriptor(updatedTrip),
-      ...current.filter((trip) => trip.id !== updatedTrip.id)
-    ]);
-
-    if (canAutoEndTripAtHome(updatedTrip)
-      && homePortPoint
-      && shouldEndTripAtHome(homePortPoint.latitude, homePortPoint.longitude, position.latitude, position.longitude, homePortRadiusNm)) {
-      finishTripAtHome(homePortRadiusNm);
-    }
-  }, [activeSummary, homePortPoint, homePortRadiusNm]);
 
   useEffect(() => {
     window.localStorage.setItem(FISHING_LOG_STORAGE_KEY, JSON.stringify(fishingCatches));
@@ -2317,56 +1523,8 @@ export function App() {
   }, [homeTileLayout]);
 
   useEffect(() => {
-    let active = true;
-
-    const hasCoordinates = (value: { latitude: number | null; longitude: number | null }) => {
-      return typeof value.latitude === "number"
-        && Number.isFinite(value.latitude)
-        && typeof value.longitude === "number"
-        && Number.isFinite(value.longitude);
-    };
-
-    void loadHomePortConfig()
-      .then((remoteConfig) => {
-        if (!active) {
-          return;
-        }
-
-        setHomePortConfig((current) => {
-          const currentHasCoordinates = hasCoordinates(current);
-          const remoteHasCoordinates = hasCoordinates(remoteConfig);
-
-          if (currentHasCoordinates && !remoteHasCoordinates) {
-            return current;
-          }
-
-          if (!currentHasCoordinates && !remoteHasCoordinates) {
-            const nextRadius = Number.isFinite(remoteConfig.radiusNm)
-              ? Math.min(Math.max(remoteConfig.radiusNm, 0.05), 2.5)
-              : current.radiusNm;
-            return nextRadius === current.radiusNm ? current : { ...current, radiusNm: nextRadius };
-          }
-
-          return {
-            latitude: remoteHasCoordinates ? remoteConfig.latitude : current.latitude,
-            longitude: remoteHasCoordinates ? remoteConfig.longitude : current.longitude,
-            radiusNm: Number.isFinite(remoteConfig.radiusNm)
-              ? Math.min(Math.max(remoteConfig.radiusNm, 0.05), 2.5)
-              : current.radiusNm
-          };
-        });
-      })
-      .catch(() => undefined);
-
-    return () => {
-      active = false;
-    };
-  }, []);
-
-  useEffect(() => {
-    window.localStorage.setItem(HOME_PORT_CONFIG_STORAGE_KEY, JSON.stringify(homePortConfig));
-    void saveHomePortConfig(homePortConfig).catch(() => undefined);
-  }, [homePortConfig]);
+    window.localStorage.setItem(TRIP_HOME_RADIUS_STORAGE_KEY, String(tripHomeRadiusNm));
+  }, [tripHomeRadiusNm]);
 
   useEffect(() => {
     window.localStorage.setItem(CUSTOM_BAIT_PRESETS_STORAGE_KEY, JSON.stringify(customBaitPresets));
@@ -2377,27 +1535,17 @@ export function App() {
   }, [tripHistory]);
 
   useEffect(() => {
-    if (!selectedTripId) {
-      return;
-    }
-
-    const hasMatch = tripHistory.some((trip) => trip.id === selectedTripId);
-    if (!hasMatch && (!tripSession || tripSession.id !== selectedTripId)) {
-      setSelectedTripId(null);
-    }
-  }, [selectedTripId, tripHistory, tripSession]);
-
-  useEffect(() => {
     const prefs: FishingMapPrefs = {
       mapDateFilter: fishingMapDateFilter,
       viewMode: fishingMapViewMode,
       basemap: fishingBasemap,
+      overlayDate: fishingMapOverlayDate,
       overlayOpacity: fishingMapOverlayOpacity,
       overlays: enabledOceanOverlays
     };
 
     window.localStorage.setItem(FISHING_MAP_PREFS_STORAGE_KEY, JSON.stringify(prefs));
-  }, [enabledOceanOverlays, fishingBasemap, fishingMapDateFilter, fishingMapOverlayOpacity, fishingMapViewMode]);
+  }, [enabledOceanOverlays, fishingBasemap, fishingMapDateFilter, fishingMapOverlayDate, fishingMapOverlayOpacity, fishingMapViewMode]);
 
   useEffect(() => {
     let active = true;
@@ -2432,90 +1580,6 @@ export function App() {
 
   useEffect(() => {
     let active = true;
-
-    const refreshTrips = () => {
-      loadTrips()
-        .then((backendTrips) => {
-          if (!active || backendTrips.length === 0) {
-            return;
-          }
-
-          const normalizedBackendTrips = backendTrips
-            .map((trip) => ({
-              ...trip,
-              origin: "cruisereport" as const,
-              tag: trip.tag || "Cruise report"
-            }))
-            .sort((a, b) => Date.parse(b.startedAt) - Date.parse(a.startedAt));
-
-          setTripHistory((current) => {
-            const localOnlyTrips = current.filter((trip) => (trip.origin ?? "local") !== "cruisereport");
-            const merged = [...normalizedBackendTrips];
-
-            for (const localTrip of localOnlyTrips) {
-              if (!merged.some((entry) => entry.id === localTrip.id)) {
-                merged.push(localTrip);
-              }
-            }
-
-            return merged.sort((a, b) => Date.parse(b.startedAt) - Date.parse(a.startedAt));
-          });
-
-          setLastTripSyncAt(new Date().toISOString());
-        })
-        .catch(() => {
-          // Keep local trips when backend trips are unavailable.
-        });
-    };
-
-    refreshTrips();
-    const timer = window.setInterval(refreshTrips, 90_000);
-
-    return () => {
-      active = false;
-      window.clearInterval(timer);
-    };
-  }, []);
-
-  useEffect(() => {
-    let active = true;
-
-    const refreshForecast = () => {
-      loadWeatherForecast()
-        .then((payload) => {
-          if (!active) {
-            return;
-          }
-
-          if (payload.available && payload.cards.length > 0) {
-            setSignalKForecastCards(payload.cards);
-            setSignalKForecastSource(payload.source);
-            return;
-          }
-
-          setSignalKForecastCards(null);
-          setSignalKForecastSource(payload.source);
-        })
-        .catch(() => {
-          if (!active) {
-            return;
-          }
-
-          setSignalKForecastCards(null);
-        });
-    };
-
-    refreshForecast();
-    const timer = window.setInterval(refreshForecast, 5 * 60_000);
-
-    return () => {
-      active = false;
-      window.clearInterval(timer);
-    };
-  }, []);
-
-  useEffect(() => {
-    let active = true;
     let initialized = false;
 
     const refreshSummary = () => {
@@ -2526,11 +1590,11 @@ export function App() {
           }
 
           setSummary(data);
-          const telemetryPosition = data.vesselPosition;
-          if (telemetryPosition && Number.isFinite(telemetryPosition.latitude) && Number.isFinite(telemetryPosition.longitude)) {
-            setVesselPosition({ latitude: telemetryPosition.latitude, longitude: telemetryPosition.longitude });
-          }
           setOnline(true);
+          const pos = (data as any).vesselPosition;
+          if (pos && typeof pos.latitude === "number" && typeof pos.longitude === "number") {
+            setVesselPosition({ latitude: pos.latitude, longitude: pos.longitude });
+          }
 
           if (!initialized) {
             initialized = true;
@@ -2572,24 +1636,50 @@ export function App() {
           longitude: position.coords.longitude
         };
 
-        const telemetryPosition = activeSummary?.vesselPosition;
-        const hasTelemetryPosition = Boolean(
-          telemetryPosition
-          && Number.isFinite(telemetryPosition.latitude)
-          && Number.isFinite(telemetryPosition.longitude)
-        );
-        const effectivePoint = hasTelemetryPosition && telemetryPosition
-          ? { latitude: telemetryPosition.latitude, longitude: telemetryPosition.longitude }
-          : nextPoint;
+        setVesselPosition(nextPoint);
 
-        setBrowserGeoLocation([nextPoint.latitude, nextPoint.longitude]);
+        if (!activeTripRef.current) {
+          return;
+        }
 
-        // Keep telemetry/NMEA as the source of truth when available.
-        setVesselPosition(effectivePoint);
+        const telemetry = buildTripTelemetrySnapshot();
+
+        const updatedTrip = appendTripBreadcrumb(activeTripRef.current, {
+          latitude: nextPoint.latitude,
+          longitude: nextPoint.longitude,
+          speedKnots: telemetry.speedKnots,
+          headingDegrees: telemetry.headingDegrees,
+          depthFeet: telemetry.depthFeet,
+          waterTempF: telemetry.waterTempF,
+          engineRpmTotal: telemetry.engineRpmTotal,
+          engineTempAvgF: telemetry.engineTempAvgF,
+          engineTempMaxF: telemetry.engineTempMaxF,
+          fuelBurnGph: telemetry.fuelBurnGph,
+          engineVoltageAvg: telemetry.engineVoltageAvg,
+          portRpm: telemetry.portRpm,
+          centerRpm: telemetry.centerRpm,
+          starboardRpm: telemetry.starboardRpm,
+          wind: telemetry.wind,
+          barometer: telemetry.barometer,
+          networkStatus: telemetry.networkStatus,
+          source: telemetry.source
+        });
+
+        activeTripRef.current = updatedTrip;
+        setTripSession(updatedTrip);
+        setSelectedTripId(updatedTrip.id);
+        setTripHistory((current) => [
+          toTripDescriptor(updatedTrip),
+          ...current.filter((trip) => trip.id !== updatedTrip.id)
+        ]);
+
+        const homePoint = updatedTrip.breadcrumbs[0];
+        if (homePoint && shouldEndTripAtHome(homePoint.latitude, homePoint.longitude, nextPoint.latitude, nextPoint.longitude, tripHomeRadiusNm)) {
+          finishTripAtHome(tripHomeRadiusNm);
+        }
       },
       () => {
-        // Keep prior telemetry position; do not force a synthetic fallback location.
-        setVesselPosition((current) => current);
+        setVesselPosition((current) => current ?? { latitude: 29.5, longitude: -83.2 });
       },
       {
         enableHighAccuracy: true,
@@ -2602,14 +1692,6 @@ export function App() {
       navigator.geolocation.clearWatch(watchId);
     };
   }, [activeSummary]);
-
-  useEffect(() => {
-    if (!vesselPosition || !activeTripRef.current) {
-      return;
-    }
-
-    appendActiveTripSample(vesselPosition);
-  }, [appendActiveTripSample, vesselPosition]);
 
   useEffect(() => {
     if (activeTripRef.current || !vesselPosition) {
@@ -2629,18 +1711,15 @@ export function App() {
       return;
     }
 
-    if (!canAutoEndTripAtHome(activeTripRef.current)) {
+    const homePoint = activeTripRef.current.breadcrumbs[0];
+    if (!homePoint) {
       return;
     }
 
-    if (!homePortPoint) {
-      return;
-    }
-
-    if (shouldEndTripAtHome(homePortPoint.latitude, homePortPoint.longitude, vesselPosition.latitude, vesselPosition.longitude, homePortRadiusNm)) {
+    if (shouldEndTripAtHome(homePoint.latitude, homePoint.longitude, vesselPosition.latitude, vesselPosition.longitude, tripHomeRadiusNm)) {
       stopTripSession();
     }
-  }, [activeSummary, vesselPosition, homePortPoint, homePortRadiusNm]);
+  }, [activeSummary, vesselPosition, tripHomeRadiusNm]);
 
   useEffect(() => {
     let active = true;
@@ -2652,10 +1731,6 @@ export function App() {
         }
 
         setLauncherState(state);
-        const restorableTarget = findLaunchTargetById(state.appId);
-        if (restorableTarget) {
-          setLastRestorableAppId(restorableTarget.id);
-        }
       })
       .catch(() => {
         if (!active) {
@@ -2669,28 +1744,6 @@ export function App() {
       active = false;
     };
   }, []);
-
-  useEffect(() => {
-    if (!remoteMode) {
-      return;
-    }
-
-    const timer = window.setInterval(() => {
-      void loadLauncherState()
-        .then((state) => {
-          setLauncherState(state);
-          const restorableTarget = findLaunchTargetById(state.appId);
-          if (restorableTarget) {
-            setLastRestorableAppId(restorableTarget.id);
-          }
-        })
-        .catch(() => undefined);
-    }, 3000);
-
-    return () => {
-      window.clearInterval(timer);
-    };
-  }, [remoteMode]);
 
   useEffect(() => {
     let active = true;
@@ -3202,108 +2255,21 @@ export function App() {
     }).filter((point) => !isLikelyLand({ latitude: point.mapLatitude, longitude: point.mapLongitude }));
   }, [fishingMapFilteredCatches]);
 
-  const telemetryVesselPosition = useMemo<{ latitude: number; longitude: number } | null>(() => {
-    const telemetryPosition = summary?.vesselPosition;
-    if (telemetryPosition && Number.isFinite(telemetryPosition.latitude) && Number.isFinite(telemetryPosition.longitude)) {
-      return { latitude: telemetryPosition.latitude, longitude: telemetryPosition.longitude };
-    }
-
-    return null;
-  }, [summary?.vesselPosition]);
-
-  const preferredMapPosition = useMemo<{ latitude: number; longitude: number } | null>(() => {
-    if (telemetryVesselPosition) {
-      return telemetryVesselPosition;
-    }
-
-    if (vesselPosition) {
-      return vesselPosition;
-    }
-
-    if (browserGeoLocation) {
-      return { latitude: browserGeoLocation[0], longitude: browserGeoLocation[1] };
-    }
-
-    if (lastKnownVesselPosition) {
-      return lastKnownVesselPosition;
-    }
-
-    return null;
-  }, [telemetryVesselPosition, vesselPosition, browserGeoLocation, lastKnownVesselPosition]);
-
-  const preferredMapPositionSource = useMemo(() => {
-    if (telemetryVesselPosition) {
-      return "NMEA";
-    }
-
-    if (vesselPosition) {
-      return "Device GPS";
-    }
-
-    if (browserGeoLocation) {
-      return "Browser geolocation";
-    }
-
-    if (lastKnownVesselPosition) {
-      return "Last known vessel";
-    }
-
-    return "Default";
-  }, [telemetryVesselPosition, vesselPosition, browserGeoLocation, lastKnownVesselPosition]);
-
-  const myVesselHomePortMapCenter = useMemo<[number, number]>(() => {
-    if (homePortPoint) {
-      return [homePortPoint.latitude, homePortPoint.longitude];
-    }
-
-    if (preferredMapPosition) {
-      return [preferredMapPosition.latitude, preferredMapPosition.longitude];
-    }
-
-    return [34.72, -76.67];
-  }, [homePortPoint, preferredMapPosition]);
-
   const fishingMapCenter = useMemo<[number, number]>(() => {
-    if (preferredMapPosition) {
-      return [preferredMapPosition.latitude, preferredMapPosition.longitude];
+    if (vesselPosition) {
+      return [vesselPosition.latitude, vesselPosition.longitude];
     }
 
-    return [34.72, -76.67];
-  }, [preferredMapPosition]);
-
-  const mapRecentCenterPosition = useMemo<{ latitude: number; longitude: number } | null>(() => {
-    if (!preferredMapPosition) {
-      return null;
+    if (fishingMapPoints.length === 0) {
+      return browserGeoLocation ?? [35.5, -75.4];
     }
 
-    if (mapHeadingMode === "course" && homeInstruments.headingDegrees !== null) {
-      return projectPointByCourse(
-        preferredMapPosition.latitude,
-        preferredMapPosition.longitude,
-        homeInstruments.headingDegrees,
-        0.55
-      );
-    }
-
-    return preferredMapPosition;
-  }, [preferredMapPosition, mapHeadingMode, homeInstruments.headingDegrees]);
+    const latitudeAverage = fishingMapPoints.reduce((sum, point) => sum + point.mapLatitude, 0) / fishingMapPoints.length;
+    const longitudeAverage = fishingMapPoints.reduce((sum, point) => sum + point.mapLongitude, 0) / fishingMapPoints.length;
+    return [latitudeAverage, longitudeAverage];
+  }, [fishingMapPoints, vesselPosition, browserGeoLocation]);
 
   const oceanOverlayOpacity = fishingMapOverlayOpacity / 100;
-  const oceanRasterAttenuation = fishingMapZoom >= 12
-    ? 0.16
-    : fishingMapZoom >= 10
-      ? 0.22
-      : fishingMapZoom >= 8
-        ? 0.3
-        : fishingMapZoom >= 6
-          ? 0.45
-        : 1;
-  const oceanRasterSoftened = oceanRasterAttenuation < 0.99;
-  const sstOverlayOpacity = Math.min(0.34, oceanOverlayOpacity * oceanRasterAttenuation);
-  const chlorophyllOverlayOpacity = Math.min(0.24, oceanOverlayOpacity * oceanRasterAttenuation * 0.8);
-  const showSstRaster = enabledOceanOverlays.sst;
-  const showChlorophyllRaster = enabledOceanOverlays.chlorophyll && !enabledOceanOverlays.sst;
-  const showFishingMapDiagnostics = fishingMapMode === "hunt" || showFishingMapSettings;
   const advisorSpeciesOptions = useMemo(() => ["Auto (map species)", ...pelagicSpecies], []);
   const displayedBuoys = useMemo(() => {
     return [...oceanBuoys]
@@ -3417,15 +2383,6 @@ export function App() {
   }, [nearbyMarineBuoys]);
 
   const weatherForecastCards = useMemo(() => {
-    if (signalKForecastCards && signalKForecastCards.length > 0) {
-      return signalKForecastCards.map((card) => ({
-        label: card.label,
-        wind: card.windKnots,
-        wave: card.waveFeet,
-        outlook: card.outlook
-      }));
-    }
-
     const baseWind = avgBuoyWindKnots ?? weatherWindValue ?? 12;
     const baseWave = currentWaveFeet ?? peakWaveFeet ?? 3.5;
     const pressurePush = buoyPressureTrend.label === "Falling"
@@ -3460,19 +2417,7 @@ export function App() {
       buildCard("+6h", 6),
       buildCard("+12h", 12)
     ];
-  }, [avgBuoyWindKnots, buoyPressureTrend.label, currentWaveFeet, peakWaveFeet, signalKForecastCards, weatherWindValue]);
-
-  useEffect(() => {
-    stormRadarTileUrlRef.current = stormRadarTileUrl;
-  }, [stormRadarTileUrl]);
-
-  useEffect(() => {
-    stormRadarPlayingRef.current = stormRadarPlaying;
-  }, [stormRadarPlaying]);
-
-  useEffect(() => {
-    stormRadarPlaybackIndexRef.current = stormRadarPlaybackIndex;
-  }, [stormRadarPlaybackIndex]);
+  }, [avgBuoyWindKnots, buoyPressureTrend.label, currentWaveFeet, peakWaveFeet, weatherWindValue]);
 
   useEffect(() => {
     if (selectedNavId !== "weather") {
@@ -3480,179 +2425,45 @@ export function App() {
     }
 
     let active = true;
-    const refreshRadarFrame = async (initial: boolean) => {
-      if (initial) {
-        setLoadingStormRadar(true);
-      }
+    setLoadingStormRadar(true);
 
-      try {
-        const payload = await loadStormRadarFrame();
+    loadStormRadarFrame()
+      .then((payload) => {
         if (!active) {
           return;
         }
 
         if (!payload.available || !payload.tileUrlTemplate) {
-          setStormRadarFrameLabel(stormRadarTileUrlRef.current ? "Radar feed delayed (showing last good frame)" : "Radar feed unavailable");
+          setStormRadarTileUrl(null);
+          setStormRadarFrameLabel("Radar feed unavailable");
           return;
         }
 
-        const timeline = (payload.timeline ?? []).filter((frame) => typeof frame.tileUrlTemplate === "string" && frame.tileUrlTemplate.length > 0);
-        setStormRadarTimeline(timeline);
-
-        if (timeline.length > 0) {
-          if (stormRadarPlayingRef.current) {
-            const nextIndex = Math.max(0, Math.min(stormRadarPlaybackIndexRef.current, timeline.length - 1));
-            setStormRadarPlaybackIndex(nextIndex);
-            return;
-          }
-
-          let lastObservedIndex = -1;
-          for (let index = timeline.length - 1; index >= 0; index -= 1) {
-            if (timeline[index]?.kind === "past") {
-              lastObservedIndex = index;
-              break;
-            }
-          }
-
-          const selectedIndex = lastObservedIndex >= 0 ? lastObservedIndex : (timeline.length - 1);
-          setStormRadarPlaybackIndex(selectedIndex);
-          setStormRadarPreviousTileUrl(null);
-          setStormRadarTileUrl(timeline[selectedIndex]?.tileUrlTemplate ?? payload.tileUrlTemplate);
-          setStormRadarFrameLabel(
-            timeline[selectedIndex]?.observedAt
-              ? new Date(timeline[selectedIndex].observedAt as string).toLocaleString()
-              : (
-                timeline[selectedIndex]?.kind === "future"
-                  ? "Forecast frame"
-                  : timeline[selectedIndex]?.kind === "nowcast"
-                    ? "Nowcast frame"
-                    : "Live frame"
-              )
-          );
-          return;
-        }
-
-        setStormRadarPreviousTileUrl(null);
         setStormRadarTileUrl(payload.tileUrlTemplate);
         setStormRadarFrameLabel(
           payload.observedAt
             ? new Date(payload.observedAt).toLocaleString()
             : "Live frame"
         );
-      } catch {
+      })
+      .catch(() => {
         if (!active) {
           return;
         }
 
-        setStormRadarFrameLabel(stormRadarTileUrlRef.current ? "Radar sync issue (showing last good frame)" : "Radar feed unavailable");
-      } finally {
-        if (active && initial) {
+        setStormRadarTileUrl(null);
+        setStormRadarFrameLabel("Radar feed unavailable");
+      })
+      .finally(() => {
+        if (active) {
           setLoadingStormRadar(false);
         }
-      }
-    };
-
-    void refreshRadarFrame(true);
-    const intervalId = window.setInterval(() => {
-      void refreshRadarFrame(false);
-    }, 90000);
+      });
 
     return () => {
       active = false;
-      window.clearInterval(intervalId);
     };
   }, [selectedNavId]);
-
-  useEffect(() => {
-    if (selectedNavId !== "weather") {
-      setStormRadarPlaying(false);
-      setStormRadarPreviousTileUrl(null);
-    }
-  }, [selectedNavId]);
-
-  useEffect(() => {
-    if (!stormRadarPlaying || stormRadarTimeline.length < 2 || selectedNavId !== "weather") {
-      return;
-    }
-
-    const timer = window.setInterval(() => {
-      setStormRadarPlaybackIndex((current) => {
-        if (stormRadarTimeline.length === 0) {
-          return 0;
-        }
-
-        const next = current + 1;
-        if (next >= stormRadarTimeline.length) {
-          window.setTimeout(() => setStormRadarPlaying(false), 0);
-          return stormRadarTimeline.length - 1;
-        }
-
-        return next;
-      });
-    }, 2200);
-
-    return () => {
-      window.clearInterval(timer);
-    };
-  }, [selectedNavId, stormRadarPlaying, stormRadarTimeline]);
-
-  useEffect(() => {
-    if (stormRadarTimeline.length === 0) {
-      return;
-    }
-
-    const frame = stormRadarTimeline[Math.max(0, Math.min(stormRadarPlaybackIndex, stormRadarTimeline.length - 1))];
-    if (!frame) {
-      return;
-    }
-
-    if (frame.tileUrlTemplate !== stormRadarTileUrlRef.current) {
-      setStormRadarPreviousTileUrl(stormRadarPlaying ? stormRadarTileUrlRef.current : null);
-      setStormRadarTileUrl(frame.tileUrlTemplate);
-    }
-
-    setStormRadarFrameLabel(
-      frame.observedAt
-        ? `${new Date(frame.observedAt).toLocaleString()}${frame.kind === "future" ? " (forecast)" : frame.kind === "nowcast" ? " (nowcast)" : ""}`
-        : (frame.kind === "future" ? "Forecast frame" : frame.kind === "nowcast" ? "Nowcast frame" : "Live frame")
-    );
-  }, [stormRadarPlaybackIndex, stormRadarTimeline, stormRadarPlaying]);
-
-  const canPlaybackRadar = stormRadarTimeline.length > 1;
-
-  const toggleStormRadarPlayback = () => {
-    if (!canPlaybackRadar) {
-      return;
-    }
-
-    setStormRadarPlaying((current) => {
-      if (current) {
-        return false;
-      }
-
-      setStormRadarPreviousTileUrl(null);
-      setStormRadarPlaybackIndex(0);
-      return true;
-    });
-  };
-
-  const stepStormRadarFrame = (delta: -1 | 1) => {
-    if (stormRadarTimeline.length === 0) {
-      return;
-    }
-
-    setStormRadarPlaying(false);
-    setStormRadarPlaybackIndex((current) => {
-      const next = current + delta;
-      if (next < 0) {
-        return 0;
-      }
-      if (next >= stormRadarTimeline.length) {
-        return stormRadarTimeline.length - 1;
-      }
-      return next;
-    });
-  };
 
   const allFishMappingCircles = useMemo<FishMappingCircle[]>(() => {
     // When species intel is available use its independently-scored per-species locations
@@ -3660,25 +2471,8 @@ export function App() {
       const now = Date.now();
       const windowMs = dateWindowMsForFilter(fishingMapDateFilter);
       const recentCatches = fishingCatches.filter((c) => now - new Date(c.timestamp).getTime() <= windowMs);
-      const refLat = vesselPosition?.latitude ?? fishingMapCenter[0];
-      const refLng = vesselPosition?.longitude ?? fishingMapCenter[1];
 
-      const rankedEntries = speciesIntel.species
-        .filter((entry) => entry.bestLatitude !== null && entry.bestLongitude !== null)
-        .map((entry) => {
-          const distanceNm = geoDistanceNm(refLat, refLng, entry.bestLatitude as number, entry.bestLongitude as number);
-          const distancePenalty = Math.min(42, distanceNm / 20);
-          const operationalScore = (entry.recommended ? 10 : 0) + entry.score - distancePenalty;
-          return { entry, distanceNm, operationalScore };
-        })
-        .sort((a, b) => b.operationalScore - a.operationalScore);
-
-      const nearbyEntries = rankedEntries.filter((item) => item.distanceNm <= 780);
-      const visibleEntries = (nearbyEntries.length >= 4 ? nearbyEntries : rankedEntries)
-        .slice(0, 6)
-        .map((item) => item.entry);
-
-      const mappedCircles: FishMappingCircle[] = visibleEntries.map((entry) => {
+      const mappedCircles: FishMappingCircle[] = speciesIntel.species.filter((entry) => entry.recommended).map((entry) => {
         if (entry.bestLatitude === null || entry.bestLongitude === null) {
           return null;
         }
@@ -3691,17 +2485,11 @@ export function App() {
           color: entry.color
         };
 
-        const hardenedCenter = enforceSpeciesOffshoreBuffer(
-          { latitude: entry.bestLatitude, longitude: entry.bestLongitude },
-          entry.species,
-          oceanBuoys.map((buoy) => ({ latitude: buoy.latitude, longitude: buoy.longitude }))
-        );
-
         return {
           id: `fish-map-${entry.species.toLowerCase().replace(/\s+/g, "-")}`,
           species: entry.species,
-          latitude: hardenedCenter.latitude,
-          longitude: hardenedCenter.longitude,
+          latitude: entry.bestLatitude,
+          longitude: entry.bestLongitude,
           radiusNm: entry.radiusNm,
           score: entry.score,
           confidence: entry.confidence,
@@ -3711,62 +2499,14 @@ export function App() {
         };
       }).filter((c): c is FishMappingCircle => c !== null);
 
-      const buoyAnchors = oceanBuoys.map((buoy) => ({ latitude: buoy.latitude, longitude: buoy.longitude }));
-      const scoutCircles: FishMappingCircle[] = [];
-
-      mappedCircles.forEach((circle) => {
-        const circleDistanceNm = geoDistanceNm(refLat, refLng, circle.latitude, circle.longitude);
-        if (circle.score < 50 || circleDistanceNm > 820) {
-          return;
-        }
-
-        const speciesSeed = circle.species.split("").reduce((sum, char) => sum + char.charCodeAt(0), 0);
-        const baseAngle = (speciesSeed % 360) * (Math.PI / 180);
-        const scoutRadiusNm = Math.max(2.4, Math.min(4.2, circle.radiusNm * 0.52));
-        const offsetDistanceNm = Math.max(10, circle.radiusNm * 1.9);
-        const side = speciesSeed % 2 === 0 ? 1 : -1;
-        const bearingAngle = baseAngle + (side * Math.PI * 0.42);
-        const eastOffsetNm = Math.cos(bearingAngle) * offsetDistanceNm;
-        const northOffsetNm = Math.sin(bearingAngle) * offsetDistanceNm;
-        const rawPoint = offsetPointByNm([circle.latitude, circle.longitude], eastOffsetNm, northOffsetNm);
-        const offshorePoint = enforceSpeciesOffshoreBuffer(
-          { latitude: rawPoint[0], longitude: rawPoint[1] },
-          circle.species,
-          buoyAnchors
-        );
-
-        if (isLikelyNearshoreInvalid(offshorePoint)) {
-          return;
-        }
-
-        const requiredOffshoreNm = minOffshoreNmForSpecies(circle.species);
-        const offshoreNm = offshoreDistanceFromAtlanticCoastNm(offshorePoint);
-        if (offshoreNm !== null && offshoreNm < requiredOffshoreNm) {
-          return;
-        }
-
-        scoutCircles.push({
-          id: `${circle.id}-scout`,
-          species: circle.species,
-          latitude: offshorePoint.latitude,
-          longitude: offshorePoint.longitude,
-          radiusNm: scoutRadiusNm,
-          score: Math.max(24, circle.score - 14),
-          confidence: "low",
-          profile: circle.profile,
-          supportingCount: circle.supportingCount,
-          points: buildSpeciesCoveragePolygon(offshorePoint.latitude, offshorePoint.longitude, scoutRadiusNm, circle.species)
-        });
-      });
-
-      return [...mappedCircles, ...scoutCircles].sort((a, b) => b.score - a.score);
+      return mappedCircles;
     }
 
     // Fallback: original logic when intel not loaded
     const now = Date.now();
     const windowMs = dateWindowMsForFilter(fishingMapDateFilter);
     const recentCatches = fishingCatches.filter((catchItem) => now - new Date(catchItem.timestamp).getTime() <= windowMs);
-    const marineBuoys = oceanBuoys.filter((buoy) => !isLikelyNearshoreInvalid({ latitude: buoy.latitude, longitude: buoy.longitude }));
+    const marineBuoys = oceanBuoys.filter((buoy) => !isLikelyLand({ latitude: buoy.latitude, longitude: buoy.longitude }));
     const signalFronts = fishingAdvisor?.oceanSignals?.fronts ?? [];
     const buoyAnchors = marineBuoys.map((buoy) => ({ latitude: buoy.latitude, longitude: buoy.longitude }));
 
@@ -3781,7 +2521,7 @@ export function App() {
           return false;
         }
 
-        return !isLikelyNearshoreInvalid({ latitude: catchItem.latitude, longitude: catchItem.longitude });
+        return !isLikelyLand({ latitude: catchItem.latitude, longitude: catchItem.longitude });
       });
 
       const rankedFronts = signalFronts
@@ -3819,34 +2559,14 @@ export function App() {
         return;
       }
 
-      const offshoreCenter = enforceSpeciesOffshoreBuffer({ latitude, longitude }, species, buoyAnchors);
-      if (isLikelyNearshoreInvalid(offshoreCenter)) {
+      const offshoreCenter = pushPointOffshore({ latitude, longitude }, buoyAnchors);
+      if (isLikelyLand(offshoreCenter)) {
         return;
       }
 
-      const requiredOffshoreNm = minOffshoreNmForSpecies(species);
-      const offshoreNm = offshoreDistanceFromAtlanticCoastNm(offshoreCenter);
-      if (offshoreNm !== null && offshoreNm < requiredOffshoreNm) {
-        return;
-      }
-
-      const frontSignal = topFront ? Math.min(1, topFront.score / 100) : 0.24;
-      const historySignal = Math.min(1, speciesCatches.length / 5);
-      const offshoreSignal = offshoreNm === null
-        ? 0.55
-        : Math.min(1, offshoreNm / Math.max(requiredOffshoreNm * 1.4, requiredOffshoreNm + 10));
-
-      const score = Math.round(32 + ((frontSignal * 0.45) + (historySignal * 0.35) + (offshoreSignal * 0.2)) * 52);
-      if (score < 52) {
-        return;
-      }
-
-      const confidence: "high" | "medium" | "low" = score >= 74 ? "high" : score >= 60 ? "medium" : "low";
-      const baseRadiusNm = 8;
-      const shoreSafeRadius = offshoreNm === null
-        ? baseRadiusNm
-        : Math.max(3.2, Math.min(baseRadiusNm, Math.max(3.2, offshoreNm - (requiredOffshoreNm * 0.45))));
-      const extendedRadius = Number(shoreSafeRadius.toFixed(1));
+      const score = 48;
+      const confidence: "high" | "medium" | "low" = "low";
+      const extendedRadius = 10;
 
       circleResults.push({
         id: `fish-map-${species.toLowerCase().replace(/\s+/g, "-")}`,
@@ -3871,47 +2591,6 @@ export function App() {
   const fishMappingCircles = useMemo(() => {
     return allFishMappingCircles.filter((circle) => speciesVisibility[circle.species] !== false);
   }, [allFishMappingCircles, speciesVisibility]);
-  const fishLegendCircles = useMemo(() => {
-    const refLat = vesselPosition?.latitude ?? fishingMapCenter[0];
-    const refLng = vesselPosition?.longitude ?? fishingMapCenter[1];
-
-    return [...fishMappingCircles]
-      .sort((a, b) => {
-        const aScout = a.id.includes("-scout") ? 1 : 0;
-        const bScout = b.id.includes("-scout") ? 1 : 0;
-        if (aScout !== bScout) {
-          return aScout - bScout;
-        }
-
-        const aDist = geoDistanceNm(refLat, refLng, a.latitude, a.longitude);
-        const bDist = geoDistanceNm(refLat, refLng, b.latitude, b.longitude);
-        if (Math.abs(aDist - bDist) > 12) {
-          return aDist - bDist;
-        }
-
-        return b.score - a.score;
-      })
-      .slice(0, 10);
-  }, [fishMappingCircles, fishingMapCenter, vesselPosition]);
-
-  useEffect(() => {
-    if (selectedNavId !== "fishing" || allFishMappingCircles.length === 0) {
-      return;
-    }
-
-    setSpeciesVisibility((current) => {
-      const visibleCount = allFishMappingCircles.filter((circle) => current[circle.species] !== false).length;
-      if (visibleCount >= 3) {
-        return current;
-      }
-
-      const next = { ...current };
-      allFishMappingCircles.forEach((circle) => {
-        next[circle.species] = true;
-      });
-      return next;
-    });
-  }, [allFishMappingCircles, selectedNavId]);
 
   const selectedFishCircle = useMemo(() => {
     if (!fishMappingCircles.length) {
@@ -3925,281 +2604,41 @@ export function App() {
     return fishMappingCircles[0];
   }, [fishMappingCircles, selectedFishCircleId]);
 
-  const speciesIntelByName = useMemo(() => {
-    return new Map((speciesIntel?.species ?? []).map((entry) => [entry.species, entry] as const));
-  }, [speciesIntel]);
+  const fallbackMarineFronts = useMemo(() => {
+    const center = vesselPosition ?? { latitude: fishingMapCenter[0], longitude: fishingMapCenter[1] };
+    const target = selectedFishCircle?.species ?? quickSpecies;
+    return buildMarineFronts(center.latitude, center.longitude, target);
+  }, [fishingMapCenter, quickSpecies, selectedFishCircle, vesselPosition]);
 
-  const realtimeOceanOverlayDate = useMemo(() => {
-    return new Date().toISOString().slice(0, 10);
-  }, [nowLabel]);
-
-  const currentEddyZones = useMemo(() => {
-    const vectors = oceanCurrentVectors
-      .filter((vector) => Number.isFinite(vector.speedKnots) && Number.isFinite(vector.directionDegrees))
-      .map((vector) => {
-        const angleRad = (vector.directionDegrees * Math.PI) / 180;
-        return {
-          latitude: vector.latitude,
-          longitude: vector.longitude,
-          speedKnots: vector.speedKnots,
-          uEast: Math.sin(angleRad) * vector.speedKnots,
-          vNorth: Math.cos(angleRad) * vector.speedKnots
-        };
-      });
-
-    if (vectors.length < 9) {
-      return [] as Array<{
-        id: string;
-        latitude: number;
-        longitude: number;
-        radiusNm: number;
-        confidence: "high" | "medium" | "low";
-        score: number;
-        rotation: "clockwise" | "counter-clockwise";
-        sampleCount: number;
-        meanSpeedKnots: number;
-      }>;
+  const tacticalFronts = useMemo(() => {
+    const fronts = fishingAdvisor?.oceanSignals?.fronts;
+    if (!fronts || fronts.length === 0) {
+      return fallbackMarineFronts;
     }
 
-    const candidates: Array<{
-      id: string;
-      latitude: number;
-      longitude: number;
-      radiusNm: number;
-      confidence: "high" | "medium" | "low";
-      score: number;
-      rotation: "clockwise" | "counter-clockwise";
-      sampleCount: number;
-      meanSpeedKnots: number;
-    }> = [];
+    return fronts.map((front) => {
+      const convergence = front.kind === "convergence";
+      const high = front.strength === "high";
+      const medium = front.strength === "medium";
+      const color = convergence
+        ? (high ? "#6fd9ff" : medium ? "#4ab8e3" : "#2b7da1")
+        : (high ? "#ff9b52" : medium ? "#ffbf72" : "#d2a57d");
 
-    vectors.forEach((center, centerIndex) => {
-      const neighbors = vectors
-        .map((vector, vectorIndex) => {
-          if (vectorIndex === centerIndex) {
-            return null;
-          }
-
-          const distanceNm = geoDistanceNm(center.latitude, center.longitude, vector.latitude, vector.longitude);
-          if (distanceNm < 3.5 || distanceNm > 22) {
-            return null;
-          }
-
-          const avgLat = (center.latitude + vector.latitude) / 2;
-          const east = (vector.longitude - center.longitude) * Math.max(0.1, Math.cos((avgLat * Math.PI) / 180));
-          const north = vector.latitude - center.latitude;
-          const radialMag = Math.hypot(east, north);
-          if (radialMag < 1e-6) {
-            return null;
-          }
-
-          const radialEast = east / radialMag;
-          const radialNorth = north / radialMag;
-          const tangentEast = radialNorth;
-          const tangentNorth = -radialEast;
-
-          const tangential = (vector.uEast * tangentEast) + (vector.vNorth * tangentNorth);
-          const radial = (vector.uEast * radialEast) + (vector.vNorth * radialNorth);
-
-          return {
-            distanceNm,
-            tangential,
-            radial,
-            speedKnots: vector.speedKnots
-          };
-        })
-        .filter((entry): entry is { distanceNm: number; tangential: number; radial: number; speedKnots: number } => entry !== null);
-
-      if (neighbors.length < 9) {
-        return;
-      }
-
-      const tangentialAbs = neighbors.reduce((sum, entry) => sum + Math.abs(entry.tangential), 0);
-      if (tangentialAbs < 0.6) {
-        return;
-      }
-
-      const signedTangential = neighbors.reduce((sum, entry) => sum + entry.tangential, 0);
-      const radialAbs = neighbors.reduce((sum, entry) => sum + Math.abs(entry.radial), 0);
-      const avgSpeedKnots = neighbors.reduce((sum, entry) => sum + entry.speedKnots, 0) / neighbors.length;
-
-      const coherence = Math.abs(signedTangential) / tangentialAbs;
-      const swirlStrength = (tangentialAbs / neighbors.length);
-      const swirlStrengthFit = Math.min(1, swirlStrength / 1.3);
-      const coverageFit = Math.min(1, neighbors.length / 14);
-      const rotationalFit = 1 - Math.min(1, radialAbs / Math.max(0.01, tangentialAbs));
-
-      const score01 = (coherence * 0.42)
-        + (swirlStrengthFit * 0.28)
-        + (coverageFit * 0.2)
-        + (rotationalFit * 0.1);
-
-      if (score01 < 0.66) {
-        return;
-      }
-
-      const sortedDistances = [...neighbors].map((entry) => entry.distanceNm).sort((a, b) => a - b);
-      const medianDistance = sortedDistances[Math.floor(sortedDistances.length / 2)] ?? 9;
-      const radiusNm = Math.max(1.6, Math.min(5.4, medianDistance * 0.34));
-      const score = Math.round(score01 * 100);
-      const confidence: "high" | "medium" | "low" = score >= 78 ? "high" : score >= 64 ? "medium" : "low";
-
-      candidates.push({
-        id: `eddy-live-${centerIndex}`,
-        latitude: center.latitude,
-        longitude: center.longitude,
-        radiusNm,
-        confidence,
-        score,
-        rotation: signedTangential >= 0 ? "clockwise" : "counter-clockwise",
-        sampleCount: neighbors.length,
-        meanSpeedKnots: avgSpeedKnots
-      });
+      return {
+        id: front.id,
+        label: `${front.label} (${front.score})`,
+        color,
+        points: front.points,
+        weight: high ? 4.2 : medium ? 3.2 : 2.4,
+        opacity: high ? 0.94 : medium ? 0.84 : 0.72,
+        dashArray: convergence ? "5 8" : high ? "" : "8 7"
+      };
     });
-
-    const selected: typeof candidates = [];
-    const sorted = [...candidates].sort((a, b) => b.score - a.score);
-    sorted.forEach((candidate) => {
-      if (selected.length >= 8) {
-        return;
-      }
-
-      const tooClose = selected.some((existing) => {
-        const distanceNm = geoDistanceNm(candidate.latitude, candidate.longitude, existing.latitude, existing.longitude);
-        const guardNm = Math.max(10, Math.min(candidate.radiusNm, existing.radiusNm) * 1.2);
-        return distanceNm < guardNm;
-      });
-
-      if (!tooClose) {
-        selected.push(candidate);
-      }
-    });
-
-    return selected;
-  }, [oceanCurrentVectors]);
-
-  const tacticalCurrentArrows = useMemo(() => {
-    if (oceanCurrentVectors.length === 0) {
-      return [] as Array<{
-        id: string;
-        shaft: [number, number][];
-        left: [number, number][];
-        right: [number, number][];
-        opacity: number;
-      }>;
-    }
-
-    const bounds = fishingMapBounds ?? {
-      minLat: fishingMapCenter[0] - 3,
-      maxLat: fishingMapCenter[0] + 3,
-      minLng: fishingMapCenter[1] - 4,
-      maxLng: fishingMapCenter[1] + 4
-    };
-
-    const anchors = oceanCurrentVectors
-      .filter((vector) => Number.isFinite(vector.speedKnots) && Number.isFinite(vector.directionDegrees))
-      .map((vector) => {
-        const bearingRad = (vector.directionDegrees * Math.PI) / 180;
-        return {
-          latitude: vector.latitude,
-          longitude: vector.longitude,
-          uEast: Math.sin(bearingRad) * vector.speedKnots,
-          vNorth: Math.cos(bearingRad) * vector.speedKnots
-        };
-      });
-
-    if (anchors.length === 0) {
-      return [] as Array<{
-        id: string;
-        shaft: [number, number][];
-        left: [number, number][];
-        right: [number, number][];
-        opacity: number;
-      }>;
-    }
-
-    const latSpan = Math.max(0.2, bounds.maxLat - bounds.minLat);
-    const lngSpan = Math.max(0.2, bounds.maxLng - bounds.minLng);
-    const aspect = Math.max(0.7, Math.min(2.8, lngSpan / latSpan));
-    const rows = Math.max(6, Math.min(14, Math.round(Math.sqrt(168 / aspect))));
-    const cols = Math.max(8, Math.min(22, Math.round(rows * aspect * 1.35)));
-    const influenceRadiusNm = Math.max(70, Math.min(190, Math.hypot(latSpan * 60, lngSpan * 60) * 0.36));
-
-    const arrows: Array<{
-      id: string;
-      shaft: [number, number][];
-      left: [number, number][];
-      right: [number, number][];
-      opacity: number;
-    }> = [];
-
-    for (let r = 0; r < rows; r += 1) {
-      const lat = bounds.minLat + ((r + 0.5) / rows) * (bounds.maxLat - bounds.minLat);
-      for (let c = 0; c < cols; c += 1) {
-        const lng = bounds.minLng + ((c + 0.5) / cols) * (bounds.maxLng - bounds.minLng);
-
-        const neighbors = anchors
-          .map((anchor) => ({
-            anchor,
-            distanceNm: geoDistanceNm(lat, lng, anchor.latitude, anchor.longitude)
-          }))
-          .filter((entry) => entry.distanceNm <= influenceRadiusNm)
-          .sort((a, b) => a.distanceNm - b.distanceNm)
-          .slice(0, 8);
-
-        if (neighbors.length < 2) {
-          continue;
-        }
-
-        let u = 0;
-        let v = 0;
-        let weightSum = 0;
-        neighbors.forEach((entry) => {
-          const w = 1 / Math.max(2.5, entry.distanceNm * entry.distanceNm);
-          u += entry.anchor.uEast * w;
-          v += entry.anchor.vNorth * w;
-          weightSum += w;
-        });
-
-        if (weightSum <= 0) {
-          continue;
-        }
-
-        u /= weightSum;
-        v /= weightSum;
-        const speedKnots = Math.hypot(u, v);
-        if (speedKnots <= 0.02) {
-          continue;
-        }
-
-        const lengthNm = Math.max(0.9, Math.min(3.9, 0.92 + (speedKnots * 1.08)));
-        const tail: [number, number] = [lat, lng];
-        const tip = offsetPointByNm(tail, u * lengthNm, v * lengthNm);
-        const headLen = Math.max(0.3, lengthNm * 0.34);
-        const angle = Math.atan2(v, u);
-        const left = offsetPointByNm(tip, Math.cos(angle + 2.58) * headLen, Math.sin(angle + 2.58) * headLen);
-        const right = offsetPointByNm(tip, Math.cos(angle - 2.58) * headLen, Math.sin(angle - 2.58) * headLen);
-
-        arrows.push({
-          id: `flow-field-${r}-${c}`,
-          shaft: [tail, tip],
-          left: [tip, left],
-          right: [tip, right],
-          opacity: Math.max(0.46, Math.min(0.9, 0.52 + (speedKnots * 0.24)))
-        });
-      }
-    }
-
-    return arrows;
-  }, [fishingMapBounds, fishingMapCenter, oceanCurrentVectors]);
+  }, [fallbackMarineFronts, fishingAdvisor]);
 
   const mapDataAvailable = typeof navigator !== "undefined" ? navigator.onLine : true;
   const tacticalMapFallback = !mapDataAvailable;
   const noBuoySignalCoverage = oceanBuoys.length === 0;
-  const noCurrentVectorCoverage = (enabledOceanOverlays.currents || enabledOceanOverlays.fronts)
-    && !loadingOceanCurrentVectors
-    && tacticalCurrentArrows.length === 0;
-  const hasCachedCurrentVectors = oceanCurrentVectors.length > 0;
   const mapFallbackActive = tacticalMapFallback;
 
   useEffect(() => {
@@ -4277,62 +2716,6 @@ export function App() {
   }, [fishingMapBounds, fishingMapCenter, selectedNavId]);
 
   useEffect(() => {
-    if (selectedNavId !== "fishing" || fishingSubview !== "map" || (!enabledOceanOverlays.currents && !enabledOceanOverlays.fronts)) {
-      setLoadingOceanCurrentVectors(false);
-      return;
-    }
-
-    const bounds = fishingMapBounds ?? {
-      minLat: fishingMapCenter[0] - 3,
-      maxLat: fishingMapCenter[0] + 3,
-      minLng: fishingMapCenter[1] - 4,
-      maxLng: fishingMapCenter[1] + 4
-    };
-
-    let active = true;
-    setLoadingOceanCurrentVectors(true);
-
-    loadOceanCurrentVectors({ ...bounds, limit: 42 })
-      .then((result) => {
-        if (!active) {
-          return;
-        }
-
-        setOceanCurrentVectors((current) => {
-          if (result.vectors.length > 0) {
-            return result.vectors;
-          }
-
-          return current;
-        });
-      })
-      .catch(() => {
-        if (!active) {
-          return;
-        }
-
-        // Keep last known vectors on intermittent network/provider failures.
-      })
-      .finally(() => {
-        if (active) {
-          setLoadingOceanCurrentVectors(false);
-        }
-      });
-
-    return () => {
-      active = false;
-    };
-  }, [enabledOceanOverlays.currents, enabledOceanOverlays.fronts, fishingMapBounds, fishingMapCenter, fishingSubview, selectedNavId]);
-
-  useEffect(() => {
-    if (typeof window === "undefined" || oceanCurrentVectors.length === 0) {
-      return;
-    }
-
-    window.localStorage.setItem(OCEAN_CURRENT_VECTOR_CACHE_STORAGE_KEY, JSON.stringify(oceanCurrentVectors));
-  }, [oceanCurrentVectors]);
-
-  useEffect(() => {
     if (selectedNavId !== "weather") {
       setWeatherRadarFullscreen(false);
     }
@@ -4349,12 +2732,6 @@ export function App() {
       setFishingMapFullscreen(false);
     }
   }, [fishingSubview, selectedNavId]);
-
-  useEffect(() => {
-    if (selectedNavId !== "vessel" || vesselSubview !== "bilgebuddy") {
-      setBilgeBuddyFullscreen(false);
-    }
-  }, [selectedNavId, vesselSubview]);
 
   useEffect(() => {
     if (selectedNavId !== "fishing") {
@@ -4376,7 +2753,6 @@ export function App() {
   useEffect(() => {
     if (selectedNavId === "fishing") {
       setFishingSubview("map");
-      setFishingMapMode("navigate");
       setShowFishingMapSettings(false);
     }
   }, [selectedNavId]);
@@ -4387,17 +2763,16 @@ export function App() {
     }
   }, [fishingSubview]);
 
-  // Request browser geolocation once when the user first opens any map-heavy page.
+  // Request browser geolocation once when the user first opens the fishing page
   useEffect(() => {
-    const needsGeoPage = selectedNavId === "fishing" || selectedNavId === "weather" || selectedNavId === "trips";
-    if (!needsGeoPage || browserGeoLocation !== null || preferredMapPosition || !navigator.geolocation) {
+    if (selectedNavId !== "fishing" || browserGeoLocation !== null || !navigator.geolocation) {
       return;
     }
     navigator.geolocation.getCurrentPosition(
       (pos) => setBrowserGeoLocation([pos.coords.latitude, pos.coords.longitude]),
       () => {}
     );
-  }, [selectedNavId, browserGeoLocation, preferredMapPosition]);
+  }, [selectedNavId, browserGeoLocation]);
 
   // Load independent per-species intelligence whenever buoys or map center changes
   useEffect(() => {
@@ -4419,7 +2794,7 @@ export function App() {
       buoys: oceanBuoys,
       referenceLatitude: fishingMapCenter[0],
       referenceLongitude: fishingMapCenter[1],
-      maxRadiusNm: 1600
+      maxRadiusNm: 260
     })
       .then((result) => {
         if (!active) {
@@ -4471,7 +2846,7 @@ export function App() {
       buoys: oceanBuoys,
       referenceLatitude: fishingMapCenter[0],
       referenceLongitude: fishingMapCenter[1],
-      maxRadiusNm: 1400
+      maxRadiusNm: 260
     })
       .then((result) => {
         if (!active) {
@@ -4627,7 +3002,6 @@ export function App() {
         requestSource: remoteMode ? "remote" : "kiosk"
       });
       setLauncherState(launchState);
-      setLastRestorableAppId(target.id);
       if (remoteMode) {
         const launchBlocked = launchState.runtime === "Blocked" || launchState.status === "Launch command required";
         vibrateRemote(launchBlocked ? [40, 40, 40] : [16, 30, 16]);
@@ -4701,37 +3075,24 @@ export function App() {
       const paired = await sendBluetoothAction("pair", { mac, name });
       setBluetoothState(paired);
 
-      if (paired.connected && paired.config.routeConfigured) {
-        const routed = await sendBluetoothAction("route-audio").catch(() => paired);
-        setBluetoothState(routed);
-      }
+      const reconnected = await sendBluetoothAction("reconnect");
+      setBluetoothState(reconnected);
+
+      const routed = await sendBluetoothAction("route-audio");
+      setBluetoothState(routed);
 
       const refreshed = await loadBluetoothState();
       setBluetoothState(refreshed);
       setBtScanResults([]);
       setOnline(true);
     } catch {
+      const recovered = await sendBluetoothAction("reconnect").catch(() => null);
+      if (recovered) {
+        const routed = await sendBluetoothAction("route-audio").catch(() => recovered);
+        setBluetoothState(routed);
+      }
       const refreshed = await loadBluetoothState().catch(() => null);
       if (refreshed) { setBluetoothState(refreshed); }
-      setOnline(false);
-    } finally {
-      setRunningBtWorkflowId(null);
-    }
-  }
-
-  async function handleForgetBtDevice() {
-    setRunningBtWorkflowId("forget-active");
-    try {
-      const state = await sendBluetoothAction("disconnect");
-      setBluetoothState(state);
-      const refreshed = await loadBluetoothState();
-      setBluetoothState(refreshed);
-      setOnline(true);
-    } catch {
-      const refreshed = await loadBluetoothState().catch(() => null);
-      if (refreshed) {
-        setBluetoothState(refreshed);
-      }
       setOnline(false);
     } finally {
       setRunningBtWorkflowId(null);
@@ -4901,16 +3262,16 @@ export function App() {
     if (preset === "search") {
       setFishingBasemap("nautical");
       setFishingMapViewMode("clusters");
-      setFishingMapOverlayOpacity(34);
-      setEnabledOceanOverlays({ sst: false, chlorophyll: false, currents: false, contours: true, fronts: false });
+      setFishingMapOverlayOpacity(56);
+      setEnabledOceanOverlays({ sst: true, chlorophyll: false, currents: false, contours: true, fronts: true });
       return;
     }
 
     if (preset === "temp-edge") {
       setFishingBasemap("standard");
       setFishingMapViewMode("heatmap");
-      setFishingMapOverlayOpacity(24);
-      setEnabledOceanOverlays({ sst: true, chlorophyll: false, currents: true, contours: false, fronts: false });
+      setFishingMapOverlayOpacity(62);
+      setEnabledOceanOverlays({ sst: true, chlorophyll: true, currents: false, contours: false, fronts: true });
       return;
     }
 
@@ -4918,14 +3279,14 @@ export function App() {
       setFishingBasemap("nautical");
       setFishingMapViewMode("points");
       setFishingMapOverlayOpacity(46);
-      setEnabledOceanOverlays({ sst: false, chlorophyll: false, currents: false, contours: true, fronts: false });
+      setEnabledOceanOverlays({ sst: false, chlorophyll: false, currents: false, contours: true, fronts: true });
       return;
     }
 
     setFishingBasemap("standard");
     setFishingMapViewMode("clusters");
     setFishingMapOverlayOpacity(34);
-    setEnabledOceanOverlays({ sst: false, chlorophyll: false, currents: true, contours: false, fronts: false });
+    setEnabledOceanOverlays({ sst: false, chlorophyll: false, currents: true, contours: false, fronts: true });
   }
 
   function applySpeciesFishingPreset(species: string) {
@@ -4936,13 +3297,13 @@ export function App() {
     setAdvisorSpecies(species);
     setFishingBasemap("nautical");
     setFishingMapViewMode("clusters");
-    setFishingMapOverlayOpacity(32);
+    setFishingMapOverlayOpacity(58);
     setEnabledOceanOverlays({
-      sst: false,
-      chlorophyll: false,
+      sst: profile.temperatureRangeF.max >= 78,
+      chlorophyll: profile.chlorophyllSignal.toLowerCase().includes("chlorophyll") || profile.currentSignal.toLowerCase().includes("weed") || profile.currentSignal.toLowerCase().includes("debris"),
       currents: frontPreference.convergence >= 1.05,
       contours: true,
-      fronts: false
+      fronts: true
     });
 
     const matchingCircle = fishMappingCircles.find((circle) => circle.species === species);
@@ -4951,471 +3312,19 @@ export function App() {
     }
   }
 
-  function applyFishingMapMode(mode: FishingMapMode) {
-    setFishingMapMode(mode);
-    setShowFishingMapSettings(false);
-
-    if (mode === "navigate") {
-      setShowSpeciesHotspots(false);
-      setFishingMapOverlayOpacity((current) => Math.min(current, 26));
-      setEnabledOceanOverlays((current) => ({
-        ...current,
-        sst: false,
-        chlorophyll: false,
-        currents: true,
-        contours: true,
-        fronts: false
-      }));
-      return;
-    }
-
-    setShowSpeciesHotspots(true);
-    setFishingMapOverlayOpacity((current) => Math.max(current, 28));
-    setEnabledOceanOverlays((current) => ({
-      ...current,
-      sst: false,
-      chlorophyll: false,
-      currents: true,
-      contours: true,
-      fronts: true
-    }));
-  }
-
-  function centerFishingMapOnBoat() {
-    const boatPosition = mapRecentCenterPosition;
-
-    if (boatPosition) {
-      setFishingMapRenderNonce((current) => current + 1);
-      return;
-    }
-
-    if (!navigator.geolocation) {
-      return;
-    }
-
-    navigator.geolocation.getCurrentPosition(
-      (position) => {
-        const nextCenter: [number, number] = [position.coords.latitude, position.coords.longitude];
-        setBrowserGeoLocation(nextCenter);
-        setFishingMapRenderNonce((current) => current + 1);
-      },
-      () => {}
-    );
-  }
-
-  const fishingMapViewportCenter = useMemo<[number, number] | null>(() => {
-    if (!fishingMapBounds) {
-      return null;
-    }
-
-    return [
-      (fishingMapBounds.minLat + fishingMapBounds.maxLat) / 2,
-      (fishingMapBounds.minLng + fishingMapBounds.maxLng) / 2
-    ];
-  }, [fishingMapBounds]);
-
-  const isCenterNearRecentTarget = useCallback((center: [number, number] | null, thresholdDeg = 0.0025) => {
-    if (!mapRecentCenterPosition || !center) {
-      return false;
-    }
-
-    return Math.hypot(center[0] - mapRecentCenterPosition.latitude, center[1] - mapRecentCenterPosition.longitude) <= thresholdDeg;
-  }, [mapRecentCenterPosition]);
-
-  const shouldShowTripCenterButton = Boolean(mapRecentCenterPosition) && !isCenterNearRecentTarget(tripMapCenter);
-
-  useEffect(() => {
-    if (selectedNavId !== "trips") {
-      return;
-    }
-
-    if (selectedTripId) {
-      setTripMapFollowRecent(false);
-    }
-  }, [selectedNavId, selectedTripId]);
-
-  function centerWeatherMapOnBoat() {
-    if (mapRecentCenterPosition) {
-      setWeatherMapRenderNonce((current) => current + 1);
-      return;
-    }
-
-    if (!navigator.geolocation) {
-      return;
-    }
-
-    navigator.geolocation.getCurrentPosition(
-      (position) => {
-        setBrowserGeoLocation([position.coords.latitude, position.coords.longitude]);
-        setWeatherMapRenderNonce((current) => current + 1);
-      },
-      () => {}
-    );
-  }
-
-  function centerTripMapOnBoat() {
-    if (mapRecentCenterPosition) {
-      setTripMapFollowRecent(true);
-      setTripMapRenderNonce((current) => current + 1);
-      return;
-    }
-
-    if (!navigator.geolocation) {
-      return;
-    }
-
-    navigator.geolocation.getCurrentPosition(
-      (position) => {
-        setBrowserGeoLocation([position.coords.latitude, position.coords.longitude]);
-        setTripMapFollowRecent(true);
-        setTripMapRenderNonce((current) => current + 1);
-      },
-      () => {}
-    );
-  }
-
-  function setMapModeNorth(recenter: "weather" | "trips" | "fishing" | "homeport") {
-    setMapHeadingMode("north");
-
-    if (recenter === "weather") {
-      setWeatherMapRenderNonce((current) => current + 1);
-      return;
-    }
-
-    if (recenter === "trips") {
-      setTripMapFollowRecent(true);
-      setTripMapRenderNonce((current) => current + 1);
-      return;
-    }
-
-    if (recenter === "fishing") {
-      setFishingMapRenderNonce((current) => current + 1);
-    }
-  }
-
-  function setMapModeCourse(recenter: "weather" | "trips" | "fishing" | "homeport") {
-    setMapHeadingMode("course");
-
-    if (recenter === "weather") {
-      setWeatherMapRenderNonce((current) => current + 1);
-      return;
-    }
-
-    if (recenter === "trips") {
-      setTripMapFollowRecent(true);
-      setTripMapRenderNonce((current) => current + 1);
-      return;
-    }
-
-    if (recenter === "fishing") {
-      setFishingMapRenderNonce((current) => current + 1);
-    }
-  }
-
-  function toggleTripMapHeadingMode() {
-    if (mapHeadingMode === "north") {
-      setMapModeCourse("trips");
-      return;
-    }
-
-    setMapModeNorth("trips");
-  }
-
-  async function executeRemoteControl(
-    action: RemoteControlAction,
-    repeat = 1,
-    options: { suppressFeedback?: boolean; suppressBusyIndicator?: boolean } = {}
-  ) {
-    if (!options.suppressBusyIndicator) {
-      setRunningRemoteControlAction(action);
-    }
+  async function handleRemoteControl(action: RemoteControlAction, repeat = 1) {
+    setRunningRemoteControlAction(action);
 
     try {
-      if (action === "home") {
-        const homeState = await sendReturnHomeRequest();
-        setLauncherState(homeState);
-        if (!options.suppressFeedback) {
-          setRemoteControlStatus("HOME returned to Palmer Lou");
-          vibrateRemote([10, 20, 10]);
-        }
-        return;
-      }
-
-      const result = await sendRemoteControlAction(action, repeat, launcherState.appId);
-      if (!options.suppressFeedback) {
-        setRemoteControlStatus(result.success ? `${result.action.toUpperCase()} sent to touchscreen` : `${result.action.toUpperCase()} failed`);
-        vibrateRemote(result.success ? [10, 20, 10] : [36, 36, 36]);
-      }
+      const result = await sendRemoteControlAction(action, repeat);
+      setRemoteControlStatus(result.success ? `${result.action.toUpperCase()} sent to touchscreen` : `${result.action.toUpperCase()} failed`);
+      vibrateRemote(result.success ? [10, 20, 10] : [36, 36, 36]);
     } catch {
-      if (!options.suppressFeedback) {
-        setRemoteControlStatus(`${action.toUpperCase()} failed`);
-        vibrateRemote([36, 36, 36]);
-      }
+      setRemoteControlStatus(`${action.toUpperCase()} failed`);
+      vibrateRemote([36, 36, 36]);
     } finally {
-      if (!options.suppressBusyIndicator) {
-        setRunningRemoteControlAction(null);
-      }
+      setRunningRemoteControlAction(null);
     }
-  }
-
-  function handleRemoteControl(action: RemoteControlAction, repeat = 1) {
-    const run = async () => {
-      await executeRemoteControl(action, repeat);
-    };
-
-    remoteControlQueueRef.current = remoteControlQueueRef.current
-      .catch(() => undefined)
-      .then(run);
-
-    return remoteControlQueueRef.current;
-  }
-
-  function clearRemoteHoldTimers() {
-    if (typeof window === "undefined") {
-      return;
-    }
-
-    if (remoteHoldDelayTimerRef.current !== null) {
-      window.clearTimeout(remoteHoldDelayTimerRef.current);
-      remoteHoldDelayTimerRef.current = null;
-    }
-
-    if (remoteHoldIntervalTimerRef.current !== null) {
-      window.clearInterval(remoteHoldIntervalTimerRef.current);
-      remoteHoldIntervalTimerRef.current = null;
-    }
-  }
-
-  function beginRemoteHold(action: RemoteControlAction) {
-    if (typeof window === "undefined") {
-      return;
-    }
-
-    if (remoteHoldActionRef.current === action) {
-      return;
-    }
-
-    clearRemoteHoldTimers();
-    remoteHoldActionRef.current = action;
-    void handleRemoteControl(action);
-
-    remoteHoldDelayTimerRef.current = window.setTimeout(() => {
-      if (remoteHoldActionRef.current !== action) {
-        return;
-      }
-
-      remoteHoldIntervalTimerRef.current = window.setInterval(() => {
-        if (remoteHoldActionRef.current !== action) {
-          return;
-        }
-
-        void handleRemoteControl(action);
-      }, REMOTE_HOLD_REPEAT_MS);
-    }, REMOTE_HOLD_INITIAL_DELAY_MS);
-  }
-
-  function endRemoteHold() {
-    remoteHoldActionRef.current = null;
-    clearRemoteHoldTimers();
-  }
-
-  function makeHoldHandlers(action: RemoteControlAction) {
-    return {
-      onPointerDown: (event: ReactPointerEvent<HTMLButtonElement>) => {
-        event.preventDefault();
-        beginRemoteHold(action);
-      },
-      onPointerUp: () => {
-        endRemoteHold();
-      },
-      onPointerLeave: () => {
-        endRemoteHold();
-      },
-      onPointerCancel: () => {
-        endRemoteHold();
-      },
-      onClick: (event: ReactMouseEvent<HTMLButtonElement>) => {
-        // Keyboard-triggered click has detail 0; keep it accessible.
-        if (event.detail === 0) {
-          void handleRemoteControl(action);
-        }
-      }
-    };
-  }
-
-  function resetTrackpadGesture() {
-    trackpadPointerIdRef.current = null;
-    trackpadLastPointRef.current = null;
-    trackpadAccumulatorRef.current = { x: 0, y: 0 };
-    trackpadGestureRef.current = { startedAt: 0, movedPx: 0 };
-    trackpadMoveQueueRef.current = { x: 0, y: 0 };
-  }
-
-  function flushTrackpadMoveQueue() {
-    if (trackpadMoveSendingRef.current) {
-      return;
-    }
-
-    const pending = trackpadMoveQueueRef.current;
-    if (pending.x === 0 && pending.y === 0) {
-      return;
-    }
-
-    let action: RemoteControlAction;
-    let repeats: number;
-
-    if (Math.abs(pending.x) >= Math.abs(pending.y)) {
-      action = pending.x >= 0 ? "right" : "left";
-      repeats = Math.max(1, Math.min(8, Math.abs(pending.x)));
-      pending.x += (pending.x > 0 ? -1 : 1) * repeats;
-    } else {
-      action = pending.y >= 0 ? "down" : "up";
-      repeats = Math.max(1, Math.min(8, Math.abs(pending.y)));
-      pending.y += (pending.y > 0 ? -1 : 1) * repeats;
-    }
-
-    trackpadMoveSendingRef.current = true;
-    void executeRemoteControl(action, repeats, { suppressFeedback: true, suppressBusyIndicator: true })
-      .finally(() => {
-        trackpadMoveSendingRef.current = false;
-        flushTrackpadMoveQueue();
-      });
-  }
-
-  function queueTrackpadMove(action: RemoteControlAction, repeats: number) {
-    const boundedRepeats = Math.max(1, Math.min(8, Math.floor(repeats)));
-    const pending = trackpadMoveQueueRef.current;
-
-    if (action === "right") {
-      pending.x += boundedRepeats;
-    } else if (action === "left") {
-      pending.x -= boundedRepeats;
-    } else if (action === "down") {
-      pending.y += boundedRepeats;
-    } else if (action === "up") {
-      pending.y -= boundedRepeats;
-    }
-
-    // Avoid runaway queues during long drags on high-latency links.
-    pending.x = Math.max(-140, Math.min(140, pending.x));
-    pending.y = Math.max(-140, Math.min(140, pending.y));
-
-    flushTrackpadMoveQueue();
-  }
-
-  function dispatchTrackpadFromAccumulator() {
-    const dragStepPx = trackpadSensitivity === "fine"
-      ? Math.round(REMOTE_TRACKPAD_DRAG_STEP_PX * 1.45)
-      : trackpadSensitivity === "fast"
-        ? Math.round(REMOTE_TRACKPAD_DRAG_STEP_PX * 0.58)
-        : REMOTE_TRACKPAD_DRAG_STEP_PX;
-
-    const current = trackpadAccumulatorRef.current;
-    const xSteps = Math.floor(Math.abs(current.x) / dragStepPx);
-    const ySteps = Math.floor(Math.abs(current.y) / dragStepPx);
-
-    if (xSteps > 0) {
-      const horizontalAction: RemoteControlAction = current.x > 0 ? "right" : "left";
-      const repeats = Math.max(1, Math.min(8, xSteps));
-      current.x += (current.x > 0 ? -1 : 1) * repeats * dragStepPx;
-      queueTrackpadMove(horizontalAction, repeats);
-    }
-
-    if (ySteps > 0) {
-      const verticalAction: RemoteControlAction = current.y > 0 ? "down" : "up";
-      const repeats = Math.max(1, Math.min(8, ySteps));
-      current.y += (current.y > 0 ? -1 : 1) * repeats * dragStepPx;
-      queueTrackpadMove(verticalAction, repeats);
-    }
-  }
-
-  function cycleTrackpadSensitivity() {
-    setTrackpadSensitivity((current) => {
-      if (current === "fine") {
-        return "normal";
-      }
-
-      if (current === "normal") {
-        return "fast";
-      }
-
-      return "fine";
-    });
-  }
-
-  function handleTrackpadPointerDown(event: ReactPointerEvent<HTMLDivElement>) {
-    event.preventDefault();
-    try {
-      event.currentTarget.setPointerCapture(event.pointerId);
-    } catch {
-      // Some synthetic/test pointer events do not support capture.
-    }
-    trackpadPointerIdRef.current = event.pointerId;
-    trackpadLastPointRef.current = { x: event.clientX, y: event.clientY };
-    trackpadAccumulatorRef.current = { x: 0, y: 0 };
-    trackpadGestureRef.current = { startedAt: Date.now(), movedPx: 0 };
-  }
-
-  function handleTrackpadPointerMove(event: ReactPointerEvent<HTMLDivElement>) {
-    if (trackpadPointerIdRef.current !== event.pointerId) {
-      return;
-    }
-
-    const last = trackpadLastPointRef.current;
-    if (!last) {
-      return;
-    }
-
-    event.preventDefault();
-    const dx = event.clientX - last.x;
-    const dy = event.clientY - last.y;
-    trackpadLastPointRef.current = { x: event.clientX, y: event.clientY };
-    trackpadGestureRef.current.movedPx += Math.hypot(dx, dy);
-    trackpadAccumulatorRef.current = {
-      x: trackpadAccumulatorRef.current.x + dx,
-      y: trackpadAccumulatorRef.current.y + dy
-    };
-    dispatchTrackpadFromAccumulator();
-  }
-
-  function handleTrackpadPointerUp(event: ReactPointerEvent<HTMLDivElement>) {
-    if (trackpadPointerIdRef.current !== event.pointerId) {
-      return;
-    }
-
-    event.preventDefault();
-    try {
-      if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-        event.currentTarget.releasePointerCapture(event.pointerId);
-      }
-    } catch {
-      // Ignore capture release errors when capture was never acquired.
-    }
-
-    const durationMs = Date.now() - trackpadGestureRef.current.startedAt;
-    const movedPx = trackpadGestureRef.current.movedPx;
-    const shouldClick = durationMs <= REMOTE_TRACKPAD_TAP_MAX_MS && movedPx <= REMOTE_TRACKPAD_TAP_MAX_TRAVEL_PX;
-    resetTrackpadGesture();
-
-    if (shouldClick) {
-      void handleRemoteControl("select");
-    }
-  }
-
-  function handleTrackpadPointerCancel(event: ReactPointerEvent<HTMLDivElement>) {
-    if (trackpadPointerIdRef.current !== event.pointerId) {
-      return;
-    }
-
-    try {
-      if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-        event.currentTarget.releasePointerCapture(event.pointerId);
-      }
-    } catch {
-      // Ignore capture release errors when capture was never acquired.
-    }
-
-    resetTrackpadGesture();
   }
 
   async function handleRemoteType(text: string) {
@@ -5447,15 +3356,15 @@ export function App() {
 
         <div className="remote-control-grid" role="group" aria-label="Directional and media controls">
           <button type="button" className="theme-toggle remote-btn remote-btn--ghost" onClick={() => void handleRemoteControl("home")}>Home</button>
-          <button type="button" className="theme-toggle remote-btn" {...makeHoldHandlers("up")}>▲</button>
+          <button type="button" className="theme-toggle remote-btn" onClick={() => void handleRemoteControl("up")}>▲</button>
           <button type="button" className="theme-toggle remote-btn remote-btn--ghost" onClick={() => void handleRemoteControl("mute")}>Mute</button>
 
-          <button type="button" className="theme-toggle remote-btn" {...makeHoldHandlers("left")}>◀</button>
+          <button type="button" className="theme-toggle remote-btn" onClick={() => void handleRemoteControl("left")}>◀</button>
           <button type="button" className="theme-toggle theme-toggle--primary remote-btn remote-btn--ok" onClick={() => void handleRemoteControl("select")}>OK</button>
-          <button type="button" className="theme-toggle remote-btn" {...makeHoldHandlers("right")}>▶</button>
+          <button type="button" className="theme-toggle remote-btn" onClick={() => void handleRemoteControl("right")}>▶</button>
 
           <button type="button" className="theme-toggle remote-btn remote-btn--ghost" onClick={() => void handleRemoteControl("back")}>Back</button>
-          <button type="button" className="theme-toggle remote-btn" {...makeHoldHandlers("down")}>▼</button>
+          <button type="button" className="theme-toggle remote-btn" onClick={() => void handleRemoteControl("down")}>▼</button>
           <button type="button" className="theme-toggle remote-btn remote-btn--ghost" onClick={() => void handleRemoteControl("playpause")}>⏯</button>
         </div>
 
@@ -5464,36 +3373,7 @@ export function App() {
           <button type="button" className="theme-toggle remote-btn" onClick={() => void handleRemoteControl("volup", 2)} disabled={runningRemoteControlAction !== null}>Vol +</button>
         </div>
 
-        <div
-          className="remote-trackpad"
-          role="button"
-          tabIndex={0}
-          aria-label="Trackpad. Drag to move cursor. Tap to click."
-          onPointerDown={handleTrackpadPointerDown}
-          onPointerMove={handleTrackpadPointerMove}
-          onPointerUp={handleTrackpadPointerUp}
-          onPointerCancel={handleTrackpadPointerCancel}
-          onPointerLeave={handleTrackpadPointerCancel}
-          onKeyDown={(event) => {
-            if (event.key === "Enter" || event.key === " ") {
-              event.preventDefault();
-              void handleRemoteControl("select");
-            }
-          }}
-        >
-          <span className="remote-trackpad__label">Trackpad</span>
-          <span className="remote-trackpad__hint">Drag to move cursor · Tap to click</span>
-        </div>
-
         <div className="keyboard-toggle-row remote-control-row">
-          <button
-            type="button"
-            className="theme-toggle remote-btn"
-            onClick={cycleTrackpadSensitivity}
-            aria-label="Toggle trackpad speed"
-          >
-            Trackpad: {trackpadSensitivity === "fine" ? "Fine" : trackpadSensitivity === "fast" ? "Fast" : "Normal"}
-          </button>
           <button type="button" className={`theme-toggle remote-btn ${showKeyboard ? "theme-toggle--primary" : ""}`}
             onClick={() => setShowKeyboard((v) => !v)}>
             {showKeyboard ? "Hide keyboard" : "⌨ Keyboard"}
@@ -5530,76 +3410,15 @@ export function App() {
   }
 
   function renderWeatherRadarMap(mapClassName: string) {
-    const weatherCenterLat = mapRecentCenterPosition?.latitude ?? fishingMapCenter[0];
-    const weatherCenterLon = mapRecentCenterPosition?.longitude ?? fishingMapCenter[1];
-    const weatherCenter: [number, number] = [weatherCenterLat, weatherCenterLon];
-
     return (
-      <MapContainer
-        key={`weather-map-${weatherMapRenderNonce}`}
-        center={weatherCenter}
-        zoom={6}
-        minZoom={4}
-        maxZoom={WEATHER_RADAR_MAX_ZOOM}
-        className={mapClassName}
-        scrollWheelZoom
-        attributionControl={false}
-      >
-        <WeatherRadarRuntimeGuard center={weatherCenter} />
-        <MapCenterReporter onCenterChange={setWeatherMapCenter} />
+      <MapContainer center={fishingMapCenter} zoom={6} className={mapClassName} scrollWheelZoom={false} attributionControl={false}>
         <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
         {stormRadarTileUrl ? (
-          <>
-            {stormRadarPlaying && stormRadarPreviousTileUrl ? (
-              <TileLayer
-                url={stormRadarPreviousTileUrl}
-                opacity={0.34}
-                zIndex={459}
-                maxNativeZoom={WEATHER_RADAR_MAX_NATIVE_ZOOM}
-                maxZoom={WEATHER_RADAR_MAX_ZOOM}
-                errorTileUrl="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/w8AAgMBgBqWcN0AAAAASUVORK5CYII="
-              />
-            ) : null}
-            <TileLayer
-              url={stormRadarTileUrl}
-              opacity={0.86}
-              zIndex={460}
-              maxNativeZoom={WEATHER_RADAR_MAX_NATIVE_ZOOM}
-              maxZoom={WEATHER_RADAR_MAX_ZOOM}
-              errorTileUrl="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/w8AAgMBgBqWcN0AAAAASUVORK5CYII="
-            />
-          </>
-        ) : (
-          <WMSTileLayer
-            url={WEATHER_RADAR_WMS_URL}
-            layers={WEATHER_RADAR_WMS_LAYER}
-            format="image/png"
-            transparent
-            opacity={0.7}
-            zIndex={450}
-            maxNativeZoom={6}
-            maxZoom={WEATHER_RADAR_MAX_ZOOM}
-          />
-        )}
-        {WEATHER_RANGE_RINGS_NM.map((ringNm) => (
-          <Circle
-            key={`weather-range-${ringNm}`}
-            center={[weatherCenterLat, weatherCenterLon]}
-            radius={ringNm * 1852}
-            pathOptions={{
-              color: ringNm >= 40 ? "#f4c86a" : "#59baff",
-              dashArray: "5 7",
-              fillOpacity: 0,
-              weight: 1
-            }}
-          >
-            <Tooltip direction="center" permanent>{`${ringNm} NM`}</Tooltip>
-          </Circle>
-        ))}
+          <TileLayer url={stormRadarTileUrl} opacity={0.72} zIndex={450} />
+        ) : null}
         {nearbyMarineBuoys.map((buoy) => {
           const waveFeet = buoy.waveHeightM === null ? null : buoy.waveHeightM * 3.28084;
           const windKnots = buoy.windSpeedMps === null ? null : buoy.windSpeedMps * 1.94384;
-          const distanceFromVesselNm = geoDistanceNm(weatherCenterLat, weatherCenterLon, buoy.latitude, buoy.longitude);
           const color = waveFeet === null
             ? "#89a3bc"
             : waveFeet >= 7
@@ -5624,24 +3443,16 @@ export function App() {
                 <div>{buoy.stationId}</div>
                 <div>Wave {waveFeet === null ? "--" : `${waveFeet.toFixed(1)} ft`}</div>
                 <div>Wind {windKnots === null ? "--" : `${windKnots.toFixed(1)} kt`}</div>
-                <div>{`${Math.round(distanceFromVesselNm)} NM from vessel`}</div>
               </Tooltip>
             </CircleMarker>
           );
         })}
-        {preferredMapPosition ? (
-          <CircleMarker
-            center={[preferredMapPosition.latitude, preferredMapPosition.longitude]}
-            radius={6}
-            pathOptions={{
-              color: "rgba(255, 255, 255, 0.95)",
-              weight: 2,
-              fillColor: "#5fd0ff",
-              fillOpacity: 0.95
-            }}
-          >
-            <Tooltip direction="top" offset={[0, -4]} opacity={0.92}>Current location ({preferredMapPositionSource})</Tooltip>
-          </CircleMarker>
+        {vesselPosition ? (
+          <Circle
+            center={[vesselPosition.latitude, vesselPosition.longitude]}
+            radius={6500}
+            pathOptions={{ color: "#59baff", fillColor: "#59baff", fillOpacity: 0.1, weight: 1 }}
+          />
         ) : null}
       </MapContainer>
     );
@@ -5653,11 +3464,31 @@ export function App() {
         <section className="panel home-panel home-splash">
           <div className="home-splash__heading home-splash__heading--standalone" aria-label="Heading ribbon" role="img">
               <span className="home-splash__heading-label">HDG</span>
-              <span>030</span>
-              <span>045</span>
-              <span className="home-splash__heading-active">060</span>
-              <span>075</span>
-              <span>090</span>
+              {(() => {
+                const h = homeInstruments.headingDegrees;
+                if (h === null) {
+                  return (
+                    <>
+                      <span>---</span>
+                      <span>---</span>
+                      <span className="home-splash__heading-active">---</span>
+                      <span>---</span>
+                      <span>---</span>
+                    </>
+                  );
+                }
+                const center = ((Math.round(h / 15) * 15) % 360 + 360) % 360;
+                const fmt = (deg: number) => String(((deg % 360) + 360) % 360).padStart(3, "0");
+                return (
+                  <>
+                    <span>{fmt(center - 30)}</span>
+                    <span>{fmt(center - 15)}</span>
+                    <span className="home-splash__heading-active">{fmt(center)}</span>
+                    <span>{fmt(center + 15)}</span>
+                    <span>{fmt(center + 30)}</span>
+                  </>
+                );
+              })()}
               <span className="home-splash__heading-label">M</span>
             </div>
 
@@ -5831,49 +3662,16 @@ export function App() {
       if (weatherRadarFullscreen) {
         return (
           <div className="camera-fullscreen weather-radar-fullscreen" role="dialog" aria-label="Fullscreen storm radar">
-            <div className="weather-radar-fullscreen__toolbar">
-              <div className="weather-radar-fullscreen__toolbar-meta">
-                <span className="panel__eyebrow">Weather</span>
-                <strong>Storm Doppler radar</strong>
-              </div>
-              <button className="camera-fullscreen-btn" type="button" onClick={() => stepStormRadarFrame(-1)} disabled={!canPlaybackRadar}
-                aria-label="Previous radar frame">Prev</button>
-              <button
-                className="camera-fullscreen-btn"
-                type="button"
-                onClick={toggleStormRadarPlayback}
-                disabled={!canPlaybackRadar}
-                aria-label={stormRadarPlaying ? "Pause radar playback" : "Play radar playback"}
-              >
-                {stormRadarPlaying ? "Pause" : "Play"}
-              </button>
-              <button className="camera-fullscreen-btn" type="button" onClick={() => stepStormRadarFrame(1)} disabled={!canPlaybackRadar}
-                aria-label="Next radar frame">Next</button>
-              <button className="camera-fullscreen-btn" type="button" onClick={centerWeatherMapOnBoat}
-                disabled={!mapRecentCenterPosition && !navigator.geolocation}
-                aria-label="Center weather map on vessel">
-                Center recent
-              </button>
-              <button className={mapHeadingMode === "north" ? "camera-fullscreen-btn theme-toggle--primary" : "camera-fullscreen-btn"}
-                type="button" onClick={() => setMapModeNorth("weather")} aria-label="North-up map mode">
-                North
-              </button>
-              <button className={mapHeadingMode === "course" ? "camera-fullscreen-btn theme-toggle--primary" : "camera-fullscreen-btn"}
-                type="button" onClick={() => setMapModeCourse("weather")} aria-label="Course-forward map mode">
-                Course
-              </button>
-              <button className="camera-fullscreen-btn" type="button" onClick={() => setWeatherRadarFullscreen(false)}
-                aria-label="Exit fullscreen radar">
-                Exit fullscreen
-              </button>
-            </div>
             {renderWeatherRadarMap("weather-radar-map weather-radar-map--fullscreen")}
             <div className="weather-radar-fullscreen__hud">
               <strong>Storm Doppler radar</strong>
               <span>{stormRadarFrameLabel ? `Radar frame: ${stormRadarFrameLabel}` : "Radar frame unavailable"}</span>
-              <span>{stormRadarTimeline.length > 1 ? `Playback: ${stormRadarPlaying ? "ON" : "OFF"} (${stormRadarTimeline.length} frames)` : "Playback unavailable"}</span>
               <span>Buoy sample: {latestBuoyObservationLabel}</span>
             </div>
+            <button className="camera-fullscreen__exit" type="button" onClick={() => setWeatherRadarFullscreen(false)}
+              aria-label="Exit fullscreen radar">
+              ✕
+            </button>
           </div>
         );
       }
@@ -5885,11 +3683,7 @@ export function App() {
               <p className="panel__eyebrow">Weather</p>
               <h2>Marine weather</h2>
             </div>
-            <div className="weather-panel__header-actions">
-              <span className={online ? "status-pill status-pill--success" : "status-pill"}>{online ? "Online" : "Fallback"}</span>
-              <button className="camera-fullscreen-btn" type="button" onClick={() => setWeatherRadarFullscreen(true)}
-                aria-label="Enter fullscreen radar">⛶</button>
-            </div>
+            <span className={online ? "status-pill status-pill--success" : "status-pill"}>{online ? "Online" : "Fallback"}</span>
           </div>
           <div className="weather-strip" role="list" aria-label="Current marine weather values">
             <article className="weather-strip__card" role="listitem"><span>Current wave</span><strong>{currentWaveFeet === null ? "--" : `${currentWaveFeet.toFixed(1)} ft`}</strong></article>
@@ -5906,42 +3700,16 @@ export function App() {
                   <h3>Storm Doppler radar</h3>
                 </div>
                 <div className="weather-radar-card__actions">
-                  <span className="trip-card__tag">{loadingStormRadar ? "Syncing weather" : "Radar observed"}</span>
-                  <button className="camera-fullscreen-btn" type="button" onClick={() => stepStormRadarFrame(-1)} disabled={!canPlaybackRadar}
-                    aria-label="Previous radar frame">Prev</button>
-                  <button
-                    className="camera-fullscreen-btn"
-                    type="button"
-                    onClick={toggleStormRadarPlayback}
-                    disabled={!canPlaybackRadar}
-                    aria-label={stormRadarPlaying ? "Pause radar playback" : "Play radar playback"}
-                  >
-                    {stormRadarPlaying ? "Pause" : "Play"}
-                  </button>
-                  <button className="camera-fullscreen-btn" type="button" onClick={() => stepStormRadarFrame(1)} disabled={!canPlaybackRadar}
-                    aria-label="Next radar frame">Next</button>
-                  <button className="camera-fullscreen-btn" type="button" onClick={centerWeatherMapOnBoat}
-                    disabled={!mapRecentCenterPosition && !navigator.geolocation}
-                    aria-label="Center weather map on vessel">
-                    Center recent
-                  </button>
-                  <button className={mapHeadingMode === "north" ? "camera-fullscreen-btn theme-toggle--primary" : "camera-fullscreen-btn"}
-                    type="button" onClick={() => setMapModeNorth("weather")} aria-label="North-up map mode">
-                    North
-                  </button>
-                  <button className={mapHeadingMode === "course" ? "camera-fullscreen-btn theme-toggle--primary" : "camera-fullscreen-btn"}
-                    type="button" onClick={() => setMapModeCourse("weather")} aria-label="Course-forward map mode">
-                    Course
-                  </button>
+                  <span className="trip-card__tag">{loadingStormRadar ? "Loading frame" : "Live radar"}</span>
+                  <button className="camera-fullscreen-btn" type="button" onClick={() => setWeatherRadarFullscreen(true)}
+                    aria-label="Enter fullscreen radar">⛶</button>
                 </div>
               </div>
 
               <div className="weather-radar-map-shell">
                 {renderWeatherRadarMap("weather-radar-map")}
               </div>
-              <p className="weather-radar-card__note">Range rings: 10 / 20 / 40 / 80 NM from vessel for offshore storm distance.</p>
-              <p className="weather-radar-card__note">Radar frame: {stormRadarFrameLabel ?? "Waiting for feed"}{stormRadarTileUrl ? "" : " (fallback source)"}</p>
-              <p className="weather-radar-card__note">Playback: {stormRadarTimeline.length > 1 ? `${stormRadarPlaying ? "running" : "stopped"} (${stormRadarTimeline.length} frames)` : "not available"}</p>
+              <p className="weather-radar-card__note">Radar frame: {stormRadarFrameLabel ?? "Waiting for feed"}</p>
               <p className="weather-radar-card__note">Nearest buoy sample: {latestBuoyObservationLabel}</p>
             </section>
 
@@ -5951,10 +3719,7 @@ export function App() {
                   <p className="panel__eyebrow">Forecast</p>
                   <h3>12 hour outlook</h3>
                 </div>
-                <div className="trip-header-actions">
-                  <span className="trip-card__tag">{seaStateLabel}</span>
-                  {signalKForecastSource ? <span className="trip-card__tag">{signalKForecastSource}</span> : null}
-                </div>
+                <span className="trip-card__tag">{seaStateLabel}</span>
               </div>
               <div className="weather-forecast__grid">
                 {weatherForecastCards.map((card) => (
@@ -5980,10 +3745,8 @@ export function App() {
     }
 
     if (selectedNavId === "fishing") {
-      const canCenterOnBoat = Boolean(preferredMapPosition || navigator.geolocation);
-
       return (
-        <section className={`panel drill-panel ${fishingSubview === "map" ? `drill-panel--fishing-map drill-panel--fishing-map--${fishingMapMode}` : "drill-panel--fishing-log"}`}>
+        <section className={`panel drill-panel ${fishingSubview === "map" ? "drill-panel--fishing-map" : "drill-panel--fishing-log"}`}>
           <div className="panel__header">
             <div>
               <p className="panel__eyebrow">Fishing</p>
@@ -5999,28 +3762,6 @@ export function App() {
                 >
                   ⛶
                 </button>
-              ) : null}
-              {fishingSubview === "map" ? (
-                <div className="fishing-page-switch fishing-page-switch--mode" role="tablist" aria-label="Fishing map mode">
-                  <button
-                    type="button"
-                    role="tab"
-                    aria-selected={fishingMapMode === "navigate"}
-                    className={fishingMapMode === "navigate" ? "theme-toggle theme-toggle--primary" : "theme-toggle"}
-                    onClick={() => applyFishingMapMode("navigate")}
-                  >
-                    Navigate
-                  </button>
-                  <button
-                    type="button"
-                    role="tab"
-                    aria-selected={fishingMapMode === "hunt"}
-                    className={fishingMapMode === "hunt" ? "theme-toggle theme-toggle--primary" : "theme-toggle"}
-                    onClick={() => applyFishingMapMode("hunt")}
-                  >
-                    Hunt
-                  </button>
-                </div>
               ) : null}
               <div className="fishing-page-switch" role="tablist" aria-label="Fishing pages">
                 <button
@@ -6265,8 +4006,18 @@ export function App() {
                       </div>
 
                       <div className="fishing-ocean-controls__row">
+                        <label className="fishing-field fishing-field--compact">
+                          <span>Overlay date</span>
+                          <input
+                            type="date"
+                            value={fishingMapOverlayDate}
+                            onChange={(event) => setFishingMapOverlayDate(event.target.value)}
+                            max={new Date().toISOString().slice(0, 10)}
+                          />
+                        </label>
+
                         <label className="fishing-field fishing-field--compact fishing-field--slider">
-                          <span>Live overlay opacity ({fishingMapOverlayOpacity}%)</span>
+                          <span>Overlay opacity ({fishingMapOverlayOpacity}%)</span>
                           <input
                             type="range"
                             min={15}
@@ -6277,9 +4028,6 @@ export function App() {
                           />
                         </label>
                       </div>
-                      <p className="fishing-map-runtime-readout">
-                        Overlay date: {realtimeOceanOverlayDate}{oceanRasterSoftened ? " | Coarse raster auto-dimmed" : ""}
-                      </p>
 
                       <div className="fishing-overlay-toggle-grid" role="group" aria-label="Ocean overlays">
                         <label className="fishing-overlay-toggle">
@@ -6294,10 +4042,28 @@ export function App() {
                         <label className="fishing-overlay-toggle">
                           <input
                             type="checkbox"
+                            checked={enabledOceanOverlays.chlorophyll}
+                            onChange={(event) => setEnabledOceanOverlays((current) => ({ ...current, chlorophyll: event.target.checked }))}
+                          />
+                          <span>Chlorophyll</span>
+                        </label>
+
+                        <label className="fishing-overlay-toggle">
+                          <input
+                            type="checkbox"
+                            checked={enabledOceanOverlays.fronts}
+                            onChange={(event) => setEnabledOceanOverlays((current) => ({ ...current, fronts: event.target.checked }))}
+                          />
+                          <span>Tactical fronts</span>
+                        </label>
+
+                        <label className="fishing-overlay-toggle">
+                          <input
+                            type="checkbox"
                             checked={enabledOceanOverlays.currents}
                             onChange={(event) => setEnabledOceanOverlays((current) => ({ ...current, currents: event.target.checked }))}
                           />
-                          <span>Currents vectors</span>
+                          <span>Currents (coarse)</span>
                         </label>
 
                         <label className="fishing-overlay-toggle">
@@ -6308,43 +4074,25 @@ export function App() {
                           />
                           <span>Depth contours</span>
                         </label>
-
-                        <label className="fishing-overlay-toggle">
-                          <input
-                            type="checkbox"
-                            checked={enabledOceanOverlays.fronts}
-                            onChange={(event) => setEnabledOceanOverlays((current) => ({ ...current, fronts: event.target.checked }))}
-                          />
-                          <span>Eddies</span>
-                        </label>
-
-                        <label className="fishing-overlay-toggle">
-                          <input
-                            type="checkbox"
-                            checked={showSpeciesHotspots}
-                            onChange={(event) => setShowSpeciesHotspots(event.target.checked)}
-                          />
-                          <span>Hotspots</span>
-                        </label>
                       </div>
                       {enabledOceanOverlays.currents ? (
                         <p className="fishing-map-local-status fishing-map-local-status--warning">
-                          Current arrows and eddy confidence zones use real vector datasets (live provider with NOAA/OSCAR fallback). Raster current tile is only a visual backdrop.
+                          Currents layer is low-resolution satellite data. Use it for broad direction only and rely on tactical fronts for fishable seams.
                         </p>
                       ) : null}
 
-                      <div className="fishing-map-confidence-legend" aria-label="Eddy confidence legend">
+                      <div className="fishing-map-confidence-legend" aria-label="Seam confidence legend">
                         <div className="fishing-map-confidence-legend__item">
                           <strong>High</strong>
-                          <span>Strong coherent rotation with broad vector support</span>
+                          <span>Tight front, repeat bites, strong color edge</span>
                         </div>
                         <div className="fishing-map-confidence-legend__item">
                           <strong>Medium</strong>
-                          <span>Moderate rotational structure with decent coverage</span>
+                          <span>Useful seam, some supporting signs, worth a pass</span>
                         </div>
                         <div className="fishing-map-confidence-legend__item">
                           <strong>Low</strong>
-                          <span>Weak or partial rotation, use as a scouting pass</span>
+                          <span>Broad current only, needs more signs before running</span>
                         </div>
                       </div>
                     </div>
@@ -6353,34 +4101,6 @@ export function App() {
 
                 <div className={fishingMapFullscreen ? "fishing-map-shell fishing-map-shell--fullscreen" : "fishing-map-shell"} aria-label="Fishing catch map">
                   {fishingSubview === "map" ? (
-                    <div className="map-nav-controls" role="group" aria-label="Fishing map navigation controls">
-                      <button
-                        type="button"
-                        className="fishing-map-center-toggle"
-                        onClick={centerFishingMapOnBoat}
-                        disabled={!canCenterOnBoat}
-                      >
-                        Center recent
-                      </button>
-                      <button
-                        type="button"
-                        className={mapHeadingMode === "north" ? "fishing-map-center-toggle map-nav-controls__mode--active" : "fishing-map-center-toggle"}
-                        onClick={() => setMapModeNorth("fishing")}
-                        aria-label="North-up map mode"
-                      >
-                        North
-                      </button>
-                      <button
-                        type="button"
-                        className={mapHeadingMode === "course" ? "fishing-map-center-toggle map-nav-controls__mode--active" : "fishing-map-center-toggle"}
-                        onClick={() => setMapModeCourse("fishing")}
-                        aria-label="Course-forward map mode"
-                      >
-                        Course
-                      </button>
-                    </div>
-                  ) : null}
-                  {fishingSubview === "map" ? (
                     <button
                       type="button"
                       className="fishing-map-settings-toggle"
@@ -6388,7 +4108,7 @@ export function App() {
                       aria-expanded={showFishingMapSettings}
                       aria-controls="fishing-map-settings"
                     >
-                      {showFishingMapSettings ? "Close controls" : "Controls"}
+                      {showFishingMapSettings ? "Close map settings" : "Map settings"}
                     </button>
                   ) : null}
                   {fishingMapFullscreen ? (
@@ -6421,8 +4141,18 @@ export function App() {
                         </select>
                       </label>
 
+                      <label className="fishing-field fishing-field--compact">
+                        <span>Overlay date</span>
+                        <input
+                          type="date"
+                          value={fishingMapOverlayDate}
+                          onChange={(event) => setFishingMapOverlayDate(event.target.value)}
+                          max={new Date().toISOString().slice(0, 10)}
+                        />
+                      </label>
+
                       <label className="fishing-field fishing-field--compact fishing-field--slider">
-                        <span>Live overlay opacity ({fishingMapOverlayOpacity}%)</span>
+                        <span>Overlay opacity ({fishingMapOverlayOpacity}%)</span>
                         <input
                           type="range"
                           min={15}
@@ -6432,11 +4162,17 @@ export function App() {
                           onChange={(event) => setFishingMapOverlayOpacity(Number(event.target.value))}
                         />
                       </label>
-                      <p className="fishing-map-runtime-readout">
-                        Overlay date: {realtimeOceanOverlayDate}{oceanRasterSoftened ? " | Coarse raster auto-dimmed" : ""}
-                      </p>
 
                       <div className="fishing-map-settings__toggles" role="group" aria-label="Ocean overlays">
+                        <label className="fishing-overlay-toggle">
+                          <input
+                            type="checkbox"
+                            checked={enabledOceanOverlays.fronts}
+                            onChange={(event) => setEnabledOceanOverlays((current) => ({ ...current, fronts: event.target.checked }))}
+                          />
+                          <span>Tactical fronts</span>
+                        </label>
+
                         <label className="fishing-overlay-toggle">
                           <input
                             type="checkbox"
@@ -6449,10 +4185,19 @@ export function App() {
                         <label className="fishing-overlay-toggle">
                           <input
                             type="checkbox"
+                            checked={enabledOceanOverlays.chlorophyll}
+                            onChange={(event) => setEnabledOceanOverlays((current) => ({ ...current, chlorophyll: event.target.checked }))}
+                          />
+                          <span>Chlorophyll</span>
+                        </label>
+
+                        <label className="fishing-overlay-toggle">
+                          <input
+                            type="checkbox"
                             checked={enabledOceanOverlays.currents}
                             onChange={(event) => setEnabledOceanOverlays((current) => ({ ...current, currents: event.target.checked }))}
                           />
-                          <span>Currents vectors</span>
+                          <span>Currents (coarse)</span>
                         </label>
 
                         <label className="fishing-overlay-toggle">
@@ -6463,29 +4208,11 @@ export function App() {
                           />
                           <span>Depth contours</span>
                         </label>
-
-                        <label className="fishing-overlay-toggle">
-                          <input
-                            type="checkbox"
-                            checked={enabledOceanOverlays.fronts}
-                            onChange={(event) => setEnabledOceanOverlays((current) => ({ ...current, fronts: event.target.checked }))}
-                          />
-                          <span>Eddies (confidence)</span>
-                        </label>
-
-                        <label className="fishing-overlay-toggle">
-                          <input
-                            type="checkbox"
-                            checked={showSpeciesHotspots}
-                            onChange={(event) => setShowSpeciesHotspots(event.target.checked)}
-                          />
-                          <span>Species hotspots</span>
-                        </label>
                       </div>
 
                       <div className="fishing-layer-presets" role="group" aria-label="Fishing map strategy presets">
-                        <span className="fishing-layer-presets__label">Strategy</span>
-                        <button type="button" className="fishing-species-selector__chip" onClick={() => applyFishingMapPreset("search")}>Search</button>
+                        <span className="fishing-layer-presets__label">Quick strategy</span>
+                        <button type="button" className="fishing-species-selector__chip" onClick={() => applyFishingMapPreset("search")}>Search water</button>
                         <button type="button" className="fishing-species-selector__chip" onClick={() => applyFishingMapPreset("temp-edge")}>Temp edge</button>
                         <button type="button" className="fishing-species-selector__chip" onClick={() => applyFishingMapPreset("structure")}>Structure</button>
                         <button type="button" className="fishing-species-selector__chip" onClick={() => applyFishingMapPreset("currents")}>Currents</button>
@@ -6508,40 +4235,35 @@ export function App() {
                       <div className="fishing-map-confidence-legend" aria-label="Seam confidence legend">
                         <div className="fishing-map-confidence-legend__item">
                           <strong>High</strong>
-                          <span>Tight edge, strong signal</span>
+                          <span>Tight front, repeat bites, strong color edge</span>
                         </div>
                         <div className="fishing-map-confidence-legend__item">
                           <strong>Medium</strong>
-                          <span>Usable seam, verify quickly</span>
+                          <span>Useful seam, some supporting signs, worth a pass</span>
                         </div>
                         <div className="fishing-map-confidence-legend__item">
                           <strong>Low</strong>
-                          <span>Weak signal, scout only</span>
+                          <span>Broad current only, needs more signs before running</span>
                         </div>
                       </div>
                     </aside>
                   ) : null}
                   {!fishingMapFullscreen && tacticalMapFallback ? (
                     <div className="fishing-map-local-status">
-                      Public tiles offline. Local tactical mode active with vessel GPS, catches, and species intel.
+                      Public tile network unavailable. Local tactical mode active with live vessel GPS, catch history, and species intelligence.
                     </div>
                   ) : null}
-                  {!fishingMapFullscreen && showFishingMapDiagnostics && noBuoySignalCoverage ? (
+                  {!fishingMapFullscreen && noBuoySignalCoverage ? (
                     <div className="fishing-map-local-status fishing-map-local-status--warning">
-                      No NOAA buoys in view. Hotspots are running in fallback mode.
-                    </div>
-                  ) : null}
-                  {!fishingMapFullscreen && showFishingMapDiagnostics && noCurrentVectorCoverage && !hasCachedCurrentVectors ? (
-                    <div className="fishing-map-local-status fishing-map-local-status--warning">
-                      Live current vectors unavailable in this view (provider/rate-limit). Pan offshore and it will auto-resume.
+                      No NOAA buoys returned in this viewport. Signal fronts are running in fallback mode until buoy coverage is found.
                     </div>
                   ) : null}
                     <MapContainer
                       key={`fishing-map-${fishingMapRenderNonce}`}
-                      center={mapRecentCenterPosition ? [mapRecentCenterPosition.latitude, mapRecentCenterPosition.longitude] : fishingMapCenter}
+                      center={fishingMapCenter}
                       zoom={7}
                       minZoom={4}
-                      maxZoom={15}
+                      maxZoom={12}
                       scrollWheelZoom
                       attributionControl={false}
                       zoomAnimation={false}
@@ -6553,9 +4275,9 @@ export function App() {
                         : { height: "clamp(300px, 48vh, 620px)", width: "100%" }}
                     >
                       <FishingMapRuntimeGuard />
-                    {preferredMapPosition ? (
+                    {vesselPosition ? (
                       <CircleMarker
-                        center={[preferredMapPosition.latitude, preferredMapPosition.longitude]}
+                        center={[vesselPosition.latitude, vesselPosition.longitude]}
                         radius={9}
                         pathOptions={{
                           color: "rgba(255, 255, 255, 0.9)",
@@ -6566,9 +4288,9 @@ export function App() {
                       >
                         <Popup>
                           <div className="fishing-map-popup">
-                            <strong>Map center anchor</strong>
-                            <span>{preferredMapPosition.latitude.toFixed(4)}°, {preferredMapPosition.longitude.toFixed(4)}°</span>
-                            <small>{preferredMapPositionSource}</small>
+                            <strong>Current position</strong>
+                            <span>{vesselPosition.latitude.toFixed(4)}°, {vesselPosition.longitude.toFixed(4)}°</span>
+                            <small>Live GPS</small>
                           </div>
                         </Popup>
                       </CircleMarker>
@@ -6591,20 +4313,26 @@ export function App() {
                         attribution='Tiles &copy; Esri'
                       />
                     ) : null}
-                    {!mapFallbackActive && showSstRaster ? (
+                    {!mapFallbackActive && enabledOceanOverlays.sst ? (
                       <TileLayer
-                        url={buildOceanOverlayUrl("sst", realtimeOceanOverlayDate)}
-                        opacity={sstOverlayOpacity}
-                        className="fishing-ocean-raster fishing-ocean-raster--sst"
+                        url={buildOceanOverlayUrl("sst", fishingMapOverlayDate)}
+                        opacity={oceanOverlayOpacity}
                         maxNativeZoom={7}
                       />
                     ) : null}
-                    {!mapFallbackActive && showChlorophyllRaster ? (
+                    {!mapFallbackActive && enabledOceanOverlays.chlorophyll ? (
                       <TileLayer
-                        url={buildOceanOverlayUrl("chlorophyll", realtimeOceanOverlayDate)}
-                        opacity={chlorophyllOverlayOpacity}
-                        className="fishing-ocean-raster fishing-ocean-raster--chlorophyll"
+                        url={buildOceanOverlayUrl("chlorophyll", fishingMapOverlayDate)}
+                        opacity={oceanOverlayOpacity}
                         maxNativeZoom={7}
+                      />
+                    ) : null}
+                    {!mapFallbackActive && enabledOceanOverlays.currents ? (
+                      <TileLayer
+                        url={buildOceanOverlayUrl("currents", fishingMapOverlayDate)}
+                        opacity={Math.min(0.42, oceanOverlayOpacity * 0.52)}
+                        maxNativeZoom={5}
+                        maxZoom={6}
                       />
                     ) : null}
                     {!mapFallbackActive && enabledOceanOverlays.contours ? (
@@ -6616,30 +4344,28 @@ export function App() {
                         />
                       </>
                     ) : null}
-                    {enabledOceanOverlays.currents ? tacticalCurrentArrows.flatMap((arrow) => [
+                    {enabledOceanOverlays.fronts ? tacticalFronts.map((front) => (
                       <Polyline
-                        key={`${arrow.id}-shaft`}
-                        positions={arrow.shaft}
-                        pathOptions={{ color: "#d7f4ff", weight: 1.8, opacity: arrow.opacity }}
-                      />,
-                      <Polyline
-                        key={`${arrow.id}-left`}
-                        positions={arrow.left}
-                        pathOptions={{ color: "#d7f4ff", weight: 1.8, opacity: arrow.opacity }}
-                      />,
-                      <Polyline
-                        key={`${arrow.id}-right`}
-                        positions={arrow.right}
-                        pathOptions={{ color: "#d7f4ff", weight: 1.8, opacity: arrow.opacity }}
-                      />
-                    ]) : null}
+                        key={front.id}
+                        positions={front.points}
+                        pathOptions={{
+                          color: front.color,
+                          weight: front.weight,
+                          opacity: front.opacity,
+                          dashArray: front.dashArray
+                        }}
+                      >
+                        <Popup>
+                          <div className="fishing-map-popup">
+                            <strong>{front.label}</strong>
+                            <small>Public-data tactical front</small>
+                          </div>
+                        </Popup>
+                      </Polyline>
+                    )) : null}
                     <FishingMapBoundsReporter onBoundsChange={setFishingMapBounds} />
-                    <FishingMapZoomReporter onZoomChange={setFishingMapZoom} />
-                    <FishingMapViewport points={fishingMapPoints} currentPosition={preferredMapPosition} />
-                    <FishingIntelViewport
-                      circles={showSpeciesHotspots ? fishMappingCircles : []}
-                      currentPosition={preferredMapPosition}
-                    />
+                    <FishingMapViewport points={fishingMapPoints} currentPosition={vesselPosition ?? null} />
+                    <FishingIntelViewport circles={fishMappingCircles} />
                     <FishingMapLayer points={fishingMapPoints} viewMode={fishingMapViewMode} />
                     {oceanBuoys.map((buoy) => {
                       const color = buoyTempColor(buoy.waterTempC);
@@ -6667,35 +4393,7 @@ export function App() {
                         </CircleMarker>
                       );
                     })}
-                    {enabledOceanOverlays.fronts ? currentEddyZones.map((eddy) => (
-                      <Circle
-                        key={eddy.id}
-                        center={[eddy.latitude, eddy.longitude]}
-                        radius={eddy.radiusNm * 1852}
-                        pathOptions={{
-                          color: eddy.confidence === "high" ? "#6ff2ff" : eddy.confidence === "medium" ? "#39c7e0" : "#2e93ad",
-                          weight: eddy.confidence === "high" ? 3 : eddy.confidence === "medium" ? 2.5 : 2,
-                          opacity: eddy.confidence === "high" ? 0.9 : eddy.confidence === "medium" ? 0.82 : 0.74,
-                          fillColor: eddy.confidence === "high" ? "#39d8ff" : "#2489a6",
-                          fillOpacity: eddy.confidence === "high" ? 0.12 : 0.08,
-                          dashArray: eddy.confidence === "high" ? "" : "6 8"
-                        }}
-                      >
-                        <Tooltip direction="top" offset={[0, -4]} opacity={0.92}>
-                          Eddy confidence {eddy.score} ({eddy.confidence.toUpperCase()})
-                        </Tooltip>
-                        <Popup>
-                          <div className="fishing-map-popup">
-                            <strong>Current eddy ({eddy.confidence.toUpperCase()})</strong>
-                            <span>{eddy.latitude.toFixed(4)}°, {eddy.longitude.toFixed(4)}°</span>
-                            <span>Confidence score: {eddy.score}/100</span>
-                            <span>Rotation: {eddy.rotation}</span>
-                            <small>{eddy.sampleCount} vector samples · {eddy.meanSpeedKnots.toFixed(2)} kt mean flow</small>
-                          </div>
-                        </Popup>
-                      </Circle>
-                    )) : null}
-                    {showSpeciesHotspots ? fishMappingCircles.flatMap((circle) => [
+                    {fishMappingCircles.flatMap((circle) => [
                       <Circle
                         key={`${circle.id}-zone`}
                         center={[circle.latitude, circle.longitude]}
@@ -6715,40 +4413,12 @@ export function App() {
                         }}
                       >
                         <Popup>
-                          {(() => {
-                            const intelEntry = speciesIntelByName.get(circle.species);
-                            const offshoreNm = offshoreDistanceFromAtlanticCoastNm({ latitude: circle.latitude, longitude: circle.longitude });
-                            const tactic = circle.confidence === "high"
-                              ? "Tactic: Run your first pass on the up-current edge and work cross-current through bait marks."
-                              : circle.confidence === "medium"
-                                ? "Tactic: Probe this zone after confirming bait and temp break, then expand 3-6 NM outward."
-                                : "Tactic: Use as a scouting waypoint and validate with bait/marks before long runs.";
-
-                            const reasons = [
-                              `Temp window: ${circle.profile.temperatureRangeF.min} F - ${circle.profile.temperatureRangeF.max} F`,
-                              `Current pattern: ${circle.profile.currentSignal}`,
-                              `Habitat depth guideline: ${circle.profile.depthBand}`,
-                              offshoreNm === null
-                                ? "Offshore guardrail: outside known inshore zones"
-                                : `Offshore guardrail: ${offshoreNm.toFixed(1)} NM off coastline`,
-                              circle.supportingCount > 0
-                                ? `Recent catches nearby: ${circle.supportingCount}`
-                                : "Catch history: limited recent logs",
-                              ...(intelEntry?.notes?.slice(0, 2) ?? []),
-                              tactic
-                            ];
-
-                            return (
                           <div className="fishing-map-popup">
                             <strong>{circle.species}</strong>
                             <span>Score {circle.score} | {circle.confidence.toUpperCase()}</span>
-                            <span>{circle.latitude.toFixed(4)}°, {circle.longitude.toFixed(4)}°</span>
-                            {reasons.map((reason, reasonIndex) => (
-                              <small key={`${circle.id}-reason-${reasonIndex}`}>{reason}</small>
-                            ))}
+                            <span>{circle.profile.temperatureRangeF.min} F – {circle.profile.temperatureRangeF.max} F</span>
+                            <small>{circle.profile.currentSignal}</small>
                           </div>
-                            );
-                          })()}
                         </Popup>
                       </Circle>,
                       <CircleMarker
@@ -6767,20 +4437,12 @@ export function App() {
                             setAdvisorSpecies(circle.species);
                           }
                         }}
-                      >
-                        <Popup>
-                          <div className="fishing-map-popup">
-                            <strong>{circle.species} hotspot</strong>
-                            <span>{circle.latitude.toFixed(4)}°, {circle.longitude.toFixed(4)}°</span>
-                            <small>Tap and run to this coordinate</small>
-                          </div>
-                        </Popup>
-                      </CircleMarker>
-                    ]) : null}
+                      />
+                    ])}
                     </MapContainer>
-                  {!fishingMapFullscreen && fishingMapMode === "hunt" && showSpeciesHotspots && fishLegendCircles.length > 0 && (
+                  {!fishingMapFullscreen && fishMappingCircles.length > 0 && (
                     <div className="fishing-map-intel-legend">
-                      {fishLegendCircles.map((circle) => {
+                      {fishMappingCircles.map((circle) => {
                         const refLat = vesselPosition?.latitude ?? fishingMapCenter[0];
                         const refLng = vesselPosition?.longitude ?? fishingMapCenter[1];
                         const isActive = selectedFishCircle?.id === circle.id;
@@ -6803,28 +4465,22 @@ export function App() {
                       })}
                     </div>
                   )}
-                  {!fishingMapFullscreen && showFishingMapDiagnostics ? (
+                  {!fishingMapFullscreen ? (
                     <p className="fishing-map-attribution">
                       {fishingBasemap === "nautical"
                         ? "Map data: OpenStreetMap + OpenSeaMap contributors"
                         : fishingBasemap === "satellite"
                           ? "Map data: Esri World Imagery"
                           : "Map data: OpenStreetMap contributors"}
-                      {enabledOceanOverlays.sst || enabledOceanOverlays.currents
-                        ? ` | Ocean layers: NASA GIBS ${realtimeOceanOverlayDate}`
+                      {enabledOceanOverlays.sst || enabledOceanOverlays.chlorophyll || enabledOceanOverlays.currents
+                        ? ` | Ocean layers: NASA GIBS (${fishingMapOverlayDate})`
                         : ""}
                       {enabledOceanOverlays.contours ? " | Contours: Esri Ocean Reference" : ""}
-                      {fishMappingCircles.length > 0
-                        ? ` | Hotspots: ${fishMappingCircles.filter((circle) => !circle.id.includes("-scout")).length} primary, ${fishMappingCircles.filter((circle) => circle.id.includes("-scout")).length} scout`
-                        : speciesIntel
-                          ? " | Hotspots: no qualified offshore lanes"
-                          : " | Hotspots: loading"}
+                      {enabledOceanOverlays.fronts ? " | Fronts: tactical seam model" : ""}
+                      {fishingAdvisor?.oceanSignals?.fronts?.length
+                        ? ` | Tactical fronts: ${fishingAdvisor.oceanSignals.fronts.length}`
+                        : " | Tactical fronts: fallback model"}
                     </p>
-                  ) : null}
-                  {!fishingMapFullscreen && showFishingMapDiagnostics && fishMappingCircles.length === 0 ? (
-                    <div className="fishing-species-empty">
-                      Offshore quality gate active. No lanes shown until SST, fronts, and offshore distance align.
-                    </div>
                   ) : null}
                 </div>
 
@@ -6889,11 +4545,7 @@ export function App() {
                               </div>
                             </button>
                             <div className="species-intel-row__flags">
-                              {entry.recommended
-                                ? <span className="species-intel-row__flag species-intel-row__flag--go">Go here</span>
-                                : entry.score >= 40
-                                  ? <span className="species-intel-row__flag">Scout lane</span>
-                                  : <span className="species-intel-row__flag">Monitor</span>}
+                              {entry.recommended ? <span className="species-intel-row__flag species-intel-row__flag--go">Go here</span> : <span className="species-intel-row__flag">Monitor</span>}
                             </div>
                             <div className="species-intel-row__bar">
                               <div className="species-intel-row__bar-fill" style={{ width: `${entry.score}%`, background: entry.color }} />
@@ -6944,20 +4596,20 @@ export function App() {
                   <div className="fishing-map-legend__item">
                     <span>SST</span>
                     <div className="fishing-map-legend__bar fishing-map-legend__bar--sst" />
-                    <small>cool to warm</small>
+                    <small>cool to warm break</small>
                   </div>
                   <div className="fishing-map-legend__item">
                     <span>Convergence</span>
                     <div className="fishing-map-legend__bar fishing-map-legend__bar--chlorophyll" />
-                    <small>current edge</small>
+                    <small>current/wind edge</small>
                   </div>
                   <div className="fishing-map-legend__item">
                     <span>Depth contours</span>
                     <div className="fishing-map-legend__bar fishing-map-legend__bar--contours" />
-                    <small>shelf lanes</small>
+                    <small>shelf breaks and ledge lanes</small>
                   </div>
                   <div className="fishing-map-legend__item">
-                    <span>Buoy temp</span>
+                    <span>Buoy temp dots</span>
                     <div className="fishing-map-legend__swatches">
                       <i style={{ background: "#52a5ff" }} />
                       <i style={{ background: "#00c0c0" }} />
@@ -7042,7 +4694,7 @@ export function App() {
 
     if (selectedNavId === "vessel") {
       return (
-        <section className="panel drill-panel drill-panel--vessel vessel-panel">
+        <section className="panel drill-panel">
           <div className="panel__header">
             <div>
               <p className="panel__eyebrow">Vessel</p>
@@ -7050,534 +4702,63 @@ export function App() {
             </div>
             <span className="status-pill">{activeSummary.system.uptime}</span>
           </div>
-
-          <div className="vessel-panel__pager" role="tablist" aria-label="Vessel pages">
-            <button
-              type="button"
-              role="tab"
-              aria-selected={vesselSubview === "systems"}
-              className={vesselSubview === "systems" ? "vessel-panel__pager-btn vessel-panel__pager-btn--active" : "vessel-panel__pager-btn"}
-              onClick={() => {
-                setBilgeBuddyFullscreen(false);
-                setVesselSubview("systems");
-              }}
-            >
-              Systems
-            </button>
-            <button
-              type="button"
-              role="tab"
-              aria-selected={vesselSubview === "bilgebuddy"}
-              className={vesselSubview === "bilgebuddy" ? "vessel-panel__pager-btn vessel-panel__pager-btn--active" : "vessel-panel__pager-btn"}
-              onClick={() => setVesselSubview("bilgebuddy")}
-            >
-              BilgeBuddy
-            </button>
-            <button
-              type="button"
-              role="tab"
-              aria-selected={vesselSubview === "myvessel"}
-              className={vesselSubview === "myvessel" ? "vessel-panel__pager-btn vessel-panel__pager-btn--active" : "vessel-panel__pager-btn"}
-              onClick={() => setVesselSubview("myvessel")}
-            >
-              My Vessel
-            </button>
+          <div className="metric-grid">
+            {activeSummary.metrics.map((metric) => (
+              <MetricCard key={metric.label} metric={metric} />
+            ))}
           </div>
-
-          <div className={vesselSubview === "systems" ? "vessel-panel__systems" : "vessel-panel__systems vessel-panel__systems--hidden"}>
-            <div className="metric-grid">
-              {activeSummary.metrics.map((metric) => (
-                <MetricCard key={metric.label} metric={metric} />
-              ))}
-            </div>
-            <div className="engine-grid">
-              {activeSummary.engines.map((engine) => (
+          <div className="engine-grid">
+            {activeSummary.engines.map((engine) => {
+              const unavailable = (engine as any).unavailable === true;
+              return (
                 <article className="engine-card" key={engine.label}>
                   <div className="engine-card__header">
                     <h3>{engine.label}</h3>
-                    <span>{engine.voltage.toFixed(1)} V</span>
+                    <span>{unavailable ? "N/A" : `${engine.voltage.toFixed(1)} V`}</span>
                   </div>
                   <div className="engine-card__main">
-                    <strong>{engine.rpm}</strong>
-                    <span>RPM</span>
+                    <strong>{unavailable ? "--" : engine.rpm}</strong>
+                    <span>{unavailable ? "no engine gateway" : "RPM"}</span>
                   </div>
                   <div className="engine-card__stats">
-                    <span>{engine.gph.toFixed(1)} GPH</span>
-                    <span>{engine.tempF} F</span>
+                    <span>{unavailable ? "--" : `${engine.gph.toFixed(1)} GPH`}</span>
+                    <span>{unavailable ? "--" : `${engine.tempF} F`}</span>
                   </div>
                 </article>
-              ))}
-            </div>
+              );
+            })}
           </div>
-
-          <div className={vesselSubview === "myvessel" ? "vessel-panel__systems my-vessel-layout" : "vessel-panel__systems vessel-panel__systems--hidden my-vessel-layout"}>
-            <div className="home-panel__quick-grid settings-kiosk__summary my-vessel-layout__summary">
-              <article className="home-panel__quick-card">
-                <span className="home-panel__quick-label">Home port status</span>
-                <strong>{homePortPoint ? "Configured" : "Not configured"}</strong>
-                <span>{homePortLabel}</span>
-              </article>
-              <article className="home-panel__quick-card">
-                <span className="home-panel__quick-label">Geofence radius</span>
-                <strong>{homePortRadiusNm.toFixed(2)} NM</strong>
-                <span>Used for trip auto-complete and map ring</span>
-              </article>
-              <article className="home-panel__quick-card">
-                <span className="home-panel__quick-label">Source</span>
-                <strong>{preferredMapPositionSource}</strong>
-                <span>{preferredMapPosition ? `${preferredMapPosition.latitude.toFixed(5)}, ${preferredMapPosition.longitude.toFixed(5)}` : "No live position lock"}</span>
-              </article>
-            </div>
-
-            <div className="my-vessel-layout__main">
-              <div className="home-port-map-shell" aria-label="Home port map picker">
-                <MapContainer
-                  key={`home-port-map-${myVesselHomePortMapCenter[0].toFixed(5)}-${myVesselHomePortMapCenter[1].toFixed(5)}`}
-                  center={myVesselHomePortMapCenter}
-                  zoom={12}
-                  minZoom={4}
-                  maxZoom={17}
-                  scrollWheelZoom
-                  attributionControl={false}
-                  className="home-port-map"
-                >
-                  <TileLayer
-                    attribution='&copy; OpenStreetMap contributors'
-                    url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-                  />
-                  <HomePortConfigMapInteractions
-                    onPick={({ latitude, longitude }) => {
-                      setHomePortConfig((current) => ({
-                        ...current,
-                        latitude,
-                        longitude
-                      }));
-                    }}
-                    onCenterChange={setMyVesselMapCenter}
-                  />
-                  {homePortPoint ? (
-                    <>
-                      <Circle
-                        center={[homePortPoint.latitude, homePortPoint.longitude]}
-                        radius={homePortRadiusNm * 1852}
-                        pathOptions={{
-                          color: "#f4c86a",
-                          weight: 2,
-                          dashArray: "7 7",
-                          opacity: 0.9,
-                          fillColor: "#f4c86a",
-                          fillOpacity: 0.08
-                        }}
-                      >
-                        <Tooltip direction="top" offset={[0, -4]} opacity={0.92}>Home Port Radius ({homePortRadiusNm.toFixed(2)} NM)</Tooltip>
-                      </Circle>
-                      <CircleMarker
-                        center={[homePortPoint.latitude, homePortPoint.longitude]}
-                        radius={6}
-                        pathOptions={{
-                          color: "#fff4cf",
-                          weight: 2,
-                          fillColor: "#f4c86a",
-                          fillOpacity: 0.95
-                        }}
-                      >
-                        <Tooltip direction="top" offset={[0, -4]} opacity={0.92}>Home Port</Tooltip>
-                      </CircleMarker>
-                    </>
-                  ) : null}
-                  {preferredMapPosition ? (
-                    <CircleMarker
-                      center={[preferredMapPosition.latitude, preferredMapPosition.longitude]}
-                      radius={5}
-                      pathOptions={{
-                        color: "rgba(255, 255, 255, 0.95)",
-                        weight: 1.8,
-                        fillColor: "#5fd0ff",
-                        fillOpacity: 0.94
-                      }}
-                    >
-                      <Tooltip direction="top" offset={[0, -4]} opacity={0.92}>Current location ({preferredMapPositionSource})</Tooltip>
-                    </CircleMarker>
-                  ) : null}
-                </MapContainer>
-                <p className="home-port-map__hint">
-                  Tap chart to set Home Port. Gold circle is return geofence.
-                </p>
-              </div>
-
-              <div className="my-vessel-layout__controls">
-                <div className="settings-kiosk__field-grid">
-                  <label className="settings-kiosk__field">
-                    <span>Home port latitude</span>
-                    <input
-                      type="number"
-                      inputMode="decimal"
-                      step={0.00001}
-                      value={homePortConfig.latitude ?? ""}
-                      onChange={(event) => {
-                        const next = event.target.value.trim();
-                        const parsed = Number.parseFloat(next);
-                        setHomePortConfig((current) => ({
-                          ...current,
-                          latitude: next === "" || !Number.isFinite(parsed) ? null : parsed
-                        }));
-                      }}
-                      placeholder="34.72000"
-                    />
-                  </label>
-
-                  <label className="settings-kiosk__field">
-                    <span>Home port longitude</span>
-                    <input
-                      type="number"
-                      inputMode="decimal"
-                      step={0.00001}
-                      value={homePortConfig.longitude ?? ""}
-                      onChange={(event) => {
-                        const next = event.target.value.trim();
-                        const parsed = Number.parseFloat(next);
-                        setHomePortConfig((current) => ({
-                          ...current,
-                          longitude: next === "" || !Number.isFinite(parsed) ? null : parsed
-                        }));
-                      }}
-                      placeholder="-76.67000"
-                    />
-                  </label>
-
-                  <label className="settings-kiosk__field">
-                    <span>Home port radius (NM)</span>
-                    <input
-                      type="range"
-                      min={0.05}
-                      max={2.5}
-                      step={0.05}
-                      value={homePortRadiusNm}
-                      onChange={(event) => {
-                        const parsed = Number.parseFloat(event.target.value);
-                        const clamped = Number.isFinite(parsed) ? Math.min(Math.max(parsed, 0.05), 2.5) : DEFAULT_TRIP_HOME_RADIUS_NM;
-                        setHomePortConfig((current) => ({ ...current, radiusNm: clamped }));
-                      }}
-                    />
-                    <strong>{homePortRadiusNm.toFixed(2)} NM</strong>
-                  </label>
-                </div>
-
-                <div className="launcher-shell__actions settings-kiosk__actions">
-                  <button
-                    className="theme-toggle theme-toggle--primary"
-                    type="button"
-                    onClick={() => {
-                      if (!preferredMapPosition) {
-                        return;
-                      }
-
-                      setHomePortConfig((current) => ({
-                        ...current,
-                        latitude: preferredMapPosition.latitude,
-                        longitude: preferredMapPosition.longitude
-                      }));
-                    }}
-                    disabled={!preferredMapPosition}
-                  >
-                    Set from vessel position
-                  </button>
-                  <button
-                    className="theme-toggle"
-                    type="button"
-                    onClick={() => {
-                      if (!myVesselMapCenter) {
-                        return;
-                      }
-
-                      setHomePortConfig((current) => ({
-                        ...current,
-                        latitude: myVesselMapCenter[0],
-                        longitude: myVesselMapCenter[1]
-                      }));
-                    }}
-                    disabled={!myVesselMapCenter}
-                  >
-                    Set from map center
-                  </button>
-                  <button
-                    className="theme-toggle"
-                    type="button"
-                    onClick={() => setHomePortConfig((current) => ({ ...current, latitude: null, longitude: null }))}
-                  >
-                    Clear home port
-                  </button>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          {vesselSubview === "bilgebuddy" ? (
-          <section
-            className={bilgeBuddyFullscreen ? "vessel-embed panel vessel-embed--fullscreen-mode" : "vessel-embed panel"}
-            aria-label="BilgeBuddy monitoring"
-          >
-            {bilgeBuddyFullscreen ? (
-              <div className="vessel-embed-fullscreen__toolbar">
-                <div className="vessel-embed-fullscreen__toolbar-meta">
-                  <span className="panel__eyebrow">Vessel</span>
-                  <strong>BilgeBuddy</strong>
-                </div>
-                <button className="camera-fullscreen-btn" type="button" onClick={() => setBilgeBuddyFullscreen(false)}
-                  aria-label="Exit fullscreen BilgeBuddy">
-                  Exit fullscreen
-                </button>
-              </div>
-            ) : null}
-
-            <div className="vessel-embed__header">
-              <div>
-                <p className="panel__eyebrow">BilgeBuddy</p>
-                <h3>Flooding, battery, and impact monitoring</h3>
-              </div>
-              <button className="camera-fullscreen-btn" type="button" onClick={() => setBilgeBuddyFullscreen(true)}
-                aria-label="Enter fullscreen BilgeBuddy">⛶</button>
-            </div>
-
-            <div className={bilgeBuddyFullscreen ? "vessel-embed__frame-shell vessel-embed__frame-shell--fullscreen" : "vessel-embed__frame-shell"}>
-              <iframe
-                title="BilgeBuddy"
-                src={BILGEBUDDY_EMBED_URL}
-                className={bilgeBuddyFullscreen ? "vessel-embed__frame vessel-embed__frame--fullscreen" : "vessel-embed__frame"}
-                loading="lazy"
-                referrerPolicy="strict-origin-when-cross-origin"
-                allow="clipboard-read; clipboard-write; geolocation"
-              />
-            </div>
-          </section>
-          ) : null}
         </section>
       );
     }
 
     if (selectedNavId === "trips") {
-      const selectedHistoricalTrip = selectedTripId ? (tripHistory.find((trip) => trip.id === selectedTripId) ?? null) : null;
-      const isViewingHistoryTrip = Boolean(selectedHistoricalTrip);
-      const tripDetail = selectedHistoricalTrip ?? tripSession;
-      const isViewingCurrentTrip = Boolean(tripSession && tripDetail?.id === tripSession.id);
-      const activeTripPoints = tripDetail?.breadcrumbs.map((point) => [point.latitude, point.longitude] as [number, number]) ?? [];
-      const activeTripCenter = tripMapFollowRecent && mapRecentCenterPosition
-        ? [mapRecentCenterPosition.latitude, mapRecentCenterPosition.longitude] as [number, number]
-        : activeTripPoints.length > 0
-          ? activeTripPoints[0]
-          : preferredMapPosition
-            ? [preferredMapPosition.latitude, preferredMapPosition.longitude] as [number, number]
-            : fishingMapCenter;
+      const selectedTrip = tripHistory.find((trip) => trip.id === selectedTripId) ?? (tripSession ?? tripHistory[0] ?? null);
+      const activeTripPoints = selectedTrip?.breadcrumbs.map((point) => [point.latitude, point.longitude] as [number, number]) ?? [];
+      const activeTripCenter: [number, number] = vesselPosition
+        ? [vesselPosition.latitude, vesselPosition.longitude]
+        : (activeTripPoints.length > 0 ? activeTripPoints[0] : [29.5, -83.2] as [number, number]);
+      const tripDetail = selectedTrip ?? tripSession ?? tripHistory[0] ?? null;
       const breadcrumbRows = tripDetail?.breadcrumbs.slice(-25).reverse() ?? [];
-      const routeBreadcrumbs = tripDetail?.breadcrumbs ?? [];
-      const latestBreadcrumb = routeBreadcrumbs.length > 0 ? routeBreadcrumbs[routeBreadcrumbs.length - 1] : null;
-      const parseTimestampMs = (value: string | null | undefined) => {
-        if (!value) {
-          return Number.NaN;
-        }
-
-        const parsed = Date.parse(value);
-        return Number.isFinite(parsed) ? parsed : Number.NaN;
-      };
-      const distanceNmBetween = (a: { latitude: number; longitude: number }, b: { latitude: number; longitude: number }) => {
-        const toRad = (degrees: number) => (degrees * Math.PI) / 180;
-        const earthRadiusMeters = 6371000;
-        const lat1 = toRad(a.latitude);
-        const lat2 = toRad(b.latitude);
-        const dLat = toRad(b.latitude - a.latitude);
-        const dLng = toRad(b.longitude - a.longitude);
-
-        const sinLat = Math.sin(dLat / 2);
-        const sinLng = Math.sin(dLng / 2);
-        const h = (sinLat * sinLat) + (Math.cos(lat1) * Math.cos(lat2) * sinLng * sinLng);
-        const c = 2 * Math.atan2(Math.sqrt(h), Math.sqrt(1 - h));
-        const meters = earthRadiusMeters * c;
-        return meters / 1852;
-      };
-      const firstBreadcrumbMs = routeBreadcrumbs.length > 0 ? parseTimestampMs(routeBreadcrumbs[0]?.time) : Number.NaN;
-      const lastBreadcrumbMs = latestBreadcrumb ? parseTimestampMs(latestBreadcrumb.time) : Number.NaN;
-      const startedAtParsedMs = parseTimestampMs(tripDetail?.startedAt);
-      const endedAtParsedMs = parseTimestampMs(tripDetail?.endedAt ?? null);
-      const startedAtMs = Number.isFinite(startedAtParsedMs) ? startedAtParsedMs : firstBreadcrumbMs;
-      const fallbackEndMs = isViewingCurrentTrip ? Date.now() : lastBreadcrumbMs;
-      const elapsedEndMs = Number.isFinite(endedAtParsedMs) ? endedAtParsedMs : fallbackEndMs;
-      const elapsedFromFieldsMs = Number.isFinite(startedAtMs) && Number.isFinite(elapsedEndMs) && elapsedEndMs >= startedAtMs
-        ? elapsedEndMs - startedAtMs
-        : Number.NaN;
-      const elapsedFromBreadcrumbsMs = Number.isFinite(firstBreadcrumbMs) && Number.isFinite(lastBreadcrumbMs) && lastBreadcrumbMs >= firstBreadcrumbMs
-        ? lastBreadcrumbMs - firstBreadcrumbMs
-        : Number.NaN;
-      const elapsedMs = Number.isFinite(elapsedFromFieldsMs) && Number.isFinite(elapsedFromBreadcrumbsMs)
-        ? Math.max(elapsedFromFieldsMs, elapsedFromBreadcrumbsMs)
-        : (Number.isFinite(elapsedFromBreadcrumbsMs) ? elapsedFromBreadcrumbsMs : elapsedFromFieldsMs);
-      const elapsedMinutes = Number.isFinite(elapsedMs) ? Math.max(0, Math.round(elapsedMs / 60000)) : null;
-      const elapsedHoursPart = elapsedMinutes === null ? null : Math.floor(elapsedMinutes / 60);
-      const elapsedMinutesPart = elapsedMinutes === null ? null : elapsedMinutes % 60;
-      const elapsedLabel = elapsedMinutesPart === null || elapsedHoursPart === null
-        ? "--"
-        : `${elapsedHoursPart}h ${elapsedMinutesPart.toString().padStart(2, "0")}m`;
-      const startedAtLabel = Number.isFinite(startedAtMs)
-        ? new Date(startedAtMs).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })
-        : "--";
-      const endedAtLabel = Number.isFinite(endedAtParsedMs)
-        ? new Date(endedAtParsedMs).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })
-        : Number.isFinite(lastBreadcrumbMs)
-          ? new Date(lastBreadcrumbMs).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })
-          : null;
-      const routeSpeedProfile = routeBreadcrumbs.map((point, index) => {
-        const observedSpeed = typeof point.speedKnots === "number" && Number.isFinite(point.speedKnots)
-          ? Math.max(0, point.speedKnots)
-          : null;
-
-        if (observedSpeed !== null) {
-          return {
-            knots: observedSpeed,
-            derived: false
-          };
-        }
-
-        const prev = routeBreadcrumbs[index - 1];
-        const next = routeBreadcrumbs[index + 1];
-        if (!prev || !next) {
-          return { knots: 0, derived: true };
-        }
-
-        const prevTimeMs = parseTimestampMs(prev.time);
-        const nextTimeMs = parseTimestampMs(next.time);
-        if (!Number.isFinite(prevTimeMs) || !Number.isFinite(nextTimeMs) || nextTimeMs <= prevTimeMs) {
-          return { knots: 0, derived: true };
-        }
-
-        const deltaHours = (nextTimeMs - prevTimeMs) / 3600000;
-        const distanceNm = distanceNmBetween(prev, next);
-        const derivedKnots = deltaHours > 0 ? distanceNm / deltaHours : 0;
-
-        return {
-          knots: Math.max(0, Math.min(55, derivedKnots)),
-          derived: true
-        };
-      });
-
-      const smoothedRouteSpeeds = routeSpeedProfile.map((entry, index) => {
-        const previousSpeed = index > 0 ? routeSpeedProfile[index - 1]?.knots ?? entry.knots : entry.knots;
-        const nextSpeed = index < routeSpeedProfile.length - 1 ? routeSpeedProfile[index + 1]?.knots ?? entry.knots : entry.knots;
-        return (entry.knots * 0.58) + (previousSpeed * 0.26) + (nextSpeed * 0.16);
-      });
-
-      const sortedSmoothed = [...smoothedRouteSpeeds].sort((a, b) => a - b);
-      const percentile95 = sortedSmoothed.length > 0
-        ? sortedSmoothed[Math.min(sortedSmoothed.length - 1, Math.floor((sortedSmoothed.length - 1) * 0.95))] ?? 0
-        : 0;
-      const maxSmoothedSpeed = sortedSmoothed.length > 0 ? sortedSmoothed[sortedSmoothed.length - 1] ?? 0 : 0;
-      const slowBandKnots = 6;
-      const speedReferenceKnots = Math.max(12, percentile95, maxSmoothedSpeed, 1);
-
-      const speedColorForBreadcrumb = (speedKnots: number) => {
-        const shifted = Math.max(0, speedKnots - slowBandKnots);
-        const range = Math.max(1, speedReferenceKnots - slowBandKnots);
-        const normalized = Math.max(0, Math.min(1, shifted / range));
-        const eased = Math.pow(normalized, 0.82);
-
-        const hue = 1 + (126 * eased);
-        const saturation = 88 - (6 * eased);
-        const lightness = 36 + (22 * eased);
-        return `hsl(${hue.toFixed(0)} ${saturation}% ${lightness.toFixed(0)}%)`;
-      };
 
       const renderTripRouteMap = (mapClassName: string) => (
-        <MapContainer key={`trip-map-${tripMapRenderNonce}`} center={activeTripCenter} zoom={11} minZoom={4} maxZoom={15} scrollWheelZoom attributionControl={false} className={mapClassName}>
+        <MapContainer center={activeTripCenter} zoom={13} scrollWheelZoom={true} attributionControl={false} className={mapClassName}>
           <TileLayer
             attribution='&copy; OpenStreetMap contributors'
             url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
           />
-          <MapCenterReporter onCenterChange={setTripMapCenter} />
-          <TripRouteViewport routePoints={activeTripPoints} currentPosition={preferredMapPosition} />
-          {homePortPoint ? (
-            <>
-              <Circle
-                center={[homePortPoint.latitude, homePortPoint.longitude]}
-                radius={homePortRadiusNm * 1852}
-                pathOptions={{
-                  color: "#f4c86a",
-                  weight: 2,
-                  dashArray: "7 7",
-                  opacity: 0.9,
-                  fillColor: "#f4c86a",
-                  fillOpacity: 0.08
-                }}
-              >
-                <Tooltip direction="top" offset={[0, -4]} opacity={0.92}>Home Port Radius ({homePortRadiusNm.toFixed(2)} NM)</Tooltip>
-              </Circle>
-              <CircleMarker
-                center={[homePortPoint.latitude, homePortPoint.longitude]}
-                radius={5}
-                pathOptions={{
-                  color: "#fff4cf",
-                  weight: 2,
-                  fillColor: "#f4c86a",
-                  fillOpacity: 0.95
-                }}
-              >
-                <Tooltip direction="top" offset={[0, -4]} opacity={0.92}>Home Port</Tooltip>
-              </CircleMarker>
-            </>
-          ) : null}
+          {vesselPosition ? <TripRouteViewport target={[vesselPosition.latitude, vesselPosition.longitude]} /> : null}
           {activeTripPoints.length > 1 ? <Polyline positions={activeTripPoints} pathOptions={{ color: "#39d0ff", weight: 4, opacity: 0.9 }} /> : null}
-          {routeBreadcrumbs.map((point, index) => (
-            <CircleMarker
-              key={`${point.time}-${index}`}
-              center={[point.latitude, point.longitude]}
-              radius={3.8}
-              pathOptions={{
-                color: "rgba(6, 16, 26, 0.88)",
-                fillColor: speedColorForBreadcrumb(smoothedRouteSpeeds[index] ?? 0),
-                fillOpacity: 0.96,
-                weight: 1.05
-              }}
-            >
-              <Popup>
-                <div className="fishing-map-popup">
-                  <strong>{new Date(point.time).toLocaleTimeString([], { hour: "numeric", minute: "2-digit", second: "2-digit" })}</strong>
-                  <span>{point.latitude.toFixed(5)}°, {point.longitude.toFixed(5)}°</span>
-                  <span>
-                    Speed: {(() => {
-                      const entry = routeSpeedProfile[index];
-                      if (!entry) {
-                        return "--";
-                      }
-
-                      return `${entry.knots.toFixed(1)} kt${entry.derived ? " (derived)" : ""}`;
-                    })()}
-                  </span>
-                  <span>Heading: {typeof point.headingDegrees === "number" ? `${Math.round(point.headingDegrees)}°` : "--"}</span>
-                  <span>Depth: {typeof point.depthFeet === "number" ? `${point.depthFeet.toFixed(1)} ft` : "--"}</span>
-                  <span>Water: {typeof point.waterTempF === "number" ? `${point.waterTempF.toFixed(1)} F` : "--"}</span>
-                  <span>RPM: {typeof point.engineRpmTotal === "number" ? point.engineRpmTotal.toFixed(0) : "--"}</span>
-                  <span>Fuel: {typeof point.fuelBurnGph === "number" ? `${point.fuelBurnGph.toFixed(1)} gph` : "--"}</span>
-                  {Array.isArray(point.engineSnapshots) && point.engineSnapshots.length > 0
-                    ? point.engineSnapshots.map((engine) => (
-                      <span key={`${point.time}-${engine.label}`}>
-                        {engine.label}: RPM {typeof engine.rpm === "number" ? engine.rpm.toFixed(0) : "--"} | Oil {typeof engine.oilPressurePsi === "number" ? `${engine.oilPressurePsi.toFixed(1)} psi` : "--"} | Oil T {typeof engine.oilTempF === "number" ? `${engine.oilTempF.toFixed(1)} F` : "--"} | Coolant {typeof engine.coolantTempF === "number" ? `${engine.coolantTempF.toFixed(1)} F` : (typeof engine.tempF === "number" ? `${engine.tempF.toFixed(1)} F` : "--")} | Fuel {typeof engine.gph === "number" ? `${engine.gph.toFixed(1)} gph` : "--"} | V {typeof engine.voltage === "number" ? `${engine.voltage.toFixed(2)} V` : "--"}
-                      </span>
-                    ))
-                    : null}
-                  <small>{point.source}</small>
-                </div>
-              </Popup>
-            </CircleMarker>
+          {activeTripPoints.map((point, index) => (
+            <CircleMarker key={`${point[0]}-${point[1]}-${index}`} center={point} radius={3} pathOptions={{ color: "#fff", fillColor: "#39d0ff", fillOpacity: 1, weight: 1 }} />
           ))}
-          {preferredMapPosition ? (
+          {vesselPosition ? (
             <CircleMarker
-              center={[preferredMapPosition.latitude, preferredMapPosition.longitude]}
-              radius={6}
-              pathOptions={{
-                color: "rgba(255, 255, 255, 0.95)",
-                weight: 2,
-                fillColor: "#5fd0ff",
-                fillOpacity: 0.95
-              }}
+              center={[vesselPosition.latitude, vesselPosition.longitude]}
+              radius={7}
+              pathOptions={{ color: "#000", fillColor: "#ffcc00", fillOpacity: 1, weight: 2 }}
             >
-              <Tooltip direction="top" offset={[0, -4]} opacity={0.92}>Current location ({preferredMapPositionSource})</Tooltip>
+              <Tooltip direction="top" offset={[0, -4]}>Palmer Lou</Tooltip>
             </CircleMarker>
           ) : null}
         </MapContainer>
@@ -7596,161 +4777,75 @@ export function App() {
       }
 
       return (
-        <section className="panel drill-panel drill-panel--trips">
+        <section className="panel drill-panel">
           <div className="panel__header">
             <div>
               <p className="panel__eyebrow">Trips</p>
-              <h2>Current track and trip history</h2>
+              <h2>Recent runs and summaries</h2>
             </div>
-            <div className="trip-header-actions">
-              <span className={isViewingCurrentTrip || !isViewingHistoryTrip ? "status-pill status-pill--success" : "status-pill status-pill--warning"}>
-                {isViewingCurrentTrip || !isViewingHistoryTrip ? "LIVE TRACK" : "HISTORY VIEW"}
-              </span>
-              <span className="status-pill status-pill--success">{tripHistory.length} saved</span>
-              {lastTripSyncAt ? (
-                <span className="trip-card__tag">Cruise sync {new Date(lastTripSyncAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</span>
-              ) : null}
-              {shouldShowTripCenterButton ? (
-                <button className="camera-fullscreen-btn" type="button" onClick={centerTripMapOnBoat}
-                  disabled={!mapRecentCenterPosition && !navigator.geolocation}
-                  aria-label="Re-center trip map">
-                  Re-center
-                </button>
-              ) : null}
-              <button
-                className="camera-fullscreen-btn map-mode-icon-btn"
-                type="button"
-                onClick={toggleTripMapHeadingMode}
-                aria-label={mapHeadingMode === "north" ? "Switch to course-up" : "Switch to north-up"}
-                title={mapHeadingMode === "north" ? "North-up (tap for Course-up)" : "Course-up (tap for North-up)"}
-              >
-                <span aria-hidden="true">⌖</span>
-                <span>{mapHeadingMode === "north" ? "N↑" : "C↑"}</span>
-              </button>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <span className="status-pill status-pill--success">{tripHistory.length} trips</span>
               <button className="camera-fullscreen-btn" type="button" onClick={() => setTripMapFullscreen(true)}
                 aria-label="Enter fullscreen trip map">⛶</button>
             </div>
           </div>
 
-          <div className="trip-controls">
+          <div className="trip-controls" style={{ display: "flex", gap: 12, marginBottom: 16, alignItems: "center", flexWrap: "wrap" }}>
             {tripSession ? (
               <button type="button" className="action-btn action-btn--danger" onClick={stopTripSession}>Stop trip</button>
             ) : (
               <button type="button" className="action-btn" onClick={startTripSession}>Start trip</button>
             )}
-            {tripSession && !isViewingCurrentTrip ? (
-              <button type="button" className="camera-fullscreen-btn" onClick={() => setSelectedTripId(tripSession.id)}>
-                View current trip
-              </button>
-            ) : null}
-            {!tripSession && tripHistory.length > 0 && !selectedTripId ? (
-              <button type="button" className="camera-fullscreen-btn" onClick={() => setSelectedTripId(tripHistory[0].id)}>
-                Open last saved trip
-              </button>
-            ) : null}
-            {isViewingHistoryTrip ? (
-              <button type="button" className="camera-fullscreen-btn" onClick={() => setSelectedTripId(tripSession?.id ?? null)}>
-                Show live chart
-              </button>
-            ) : null}
-            {tripHistory.length > 0 ? (
-              <label className="trip-history-picker">
-                <span>Review trip</span>
-                <select
-                  value={selectedHistoricalTrip?.id ?? ""}
-                  onChange={(event) => setSelectedTripId(event.target.value || null)}
-                  aria-label="Select a saved trip to review"
-                >
-                  <option value="">Live chart</option>
-                  {tripHistory.map((trip) => (
-                    <option key={trip.id} value={trip.id}>
-                      {trip.title} • {trip.distanceNm.toFixed(2)} NM
-                    </option>
-                  ))}
-                </select>
-              </label>
-            ) : null}
-            <div className="trip-home-port-pill" role="status" aria-live="polite">
-              <span>Home port</span>
-              <strong>{homePortLabel}</strong>
-              <small>Radius {homePortRadiusNm.toFixed(2)} NM</small>
-            </div>
-            <button
-              type="button"
-              className="camera-fullscreen-btn"
-              onClick={() => {
-                setSelectedNavId("vessel");
-                setVesselSubview("myvessel");
-              }}
-            >
-              Configure home port
-            </button>
+            <label style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 220, fontSize: 14 }}>
+              <span>Home radius</span>
+              <input
+                type="range"
+                min={0.05}
+                max={2.5}
+                step={0.05}
+                value={tripHomeRadiusNm}
+                onChange={(event) => setTripHomeRadiusNm(Number.parseFloat(event.target.value) || DEFAULT_TRIP_HOME_RADIUS_NM)}
+                aria-label="Trip home radius in nautical miles"
+              />
+              <strong>{tripHomeRadiusNm.toFixed(2)} NM</strong>
+            </label>
           </div>
 
-          {tripControlMessage ? <p className="trip-control-message">{tripControlMessage}</p> : null}
-
-          <div className="trip-mode-banner" role="status" aria-live="polite">
-            {isViewingCurrentTrip
-              ? "Live chart mode: current vessel track is the active route."
-              : isViewingHistoryTrip
-                ? "History mode: viewing a saved trip. Tap Show live chart to return to current tracking."
-                : "Live chart mode: no saved trip selected; map stays centered on the vessel."}
-          </div>
-
-          <div className={tripDetail ? "trip-route-top" : "trip-route-top trip-route-top--map-only"}>
-            {tripDetail ? (
-              <div className="trip-detail panel trip-mfd-panel" style={{ padding: 16 }}>
-                <div className="trip-detail__header">
-                  <div>
-                    <p className="panel__eyebrow">MFD track detail</p>
-                    <h3 className="trip-detail__title">{tripDetail.title}</h3>
-                  </div>
-                  <span className="trip-card__tag">{tripDetail.tag}</span>
+          {tripDetail ? (
+            <div className="trip-detail panel" style={{ marginBottom: 16, padding: 16 }}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, marginBottom: 12 }}>
+                <div>
+                  <p className="panel__eyebrow">Route detail</p>
+                  <h3 style={{ margin: "4px 0 0" }}>{tripDetail.title}</h3>
                 </div>
-
-                <div className="trip-mfd-grid">
-                  <div><strong>{tripDetail.distanceNm.toFixed(2)}</strong><div>Distance NM</div></div>
-                  <div><strong>{elapsedLabel}</strong><div>Elapsed</div></div>
-                  <div><strong>{tripDetail.breadcrumbs.length}</strong><div>Track points</div></div>
-                  <div><strong>{tripDetail.averageSpeedKnots.toFixed(1)}</strong><div>Avg kt</div></div>
-                  <div><strong>{tripDetail.averageRpmTotal.toFixed(0)}</strong><div>Avg RPM</div></div>
-                  <div><strong>{tripDetail.maxEngineTempF.toFixed(0)}</strong><div>Max eng temp F</div></div>
-                  <div><strong>{latestBreadcrumb && typeof latestBreadcrumb.depthFeet === "number" ? `${latestBreadcrumb.depthFeet.toFixed(1)} ft` : "--"}</strong><div>Latest depth</div></div>
-                  <div><strong>{latestBreadcrumb && typeof latestBreadcrumb.waterTempF === "number" ? `${latestBreadcrumb.waterTempF.toFixed(1)} F` : "--"}</strong><div>Latest water</div></div>
-                  <div><strong>{latestBreadcrumb && typeof latestBreadcrumb.speedKnots === "number" ? `${latestBreadcrumb.speedKnots.toFixed(1)} kt` : "--"}</strong><div>Latest speed</div></div>
-                  <div><strong>{latestBreadcrumb && typeof latestBreadcrumb.headingDegrees === "number" ? `${Math.round(latestBreadcrumb.headingDegrees)}°` : "--"}</strong><div>Latest heading</div></div>
-                  <div><strong>{latestBreadcrumb && typeof latestBreadcrumb.fuelBurnGph === "number" ? `${latestBreadcrumb.fuelBurnGph.toFixed(1)} gph` : "--"}</strong><div>Latest fuel</div></div>
-                  <div><strong>{latestBreadcrumb && typeof latestBreadcrumb.engineVoltageAvg === "number" ? `${latestBreadcrumb.engineVoltageAvg.toFixed(2)} V` : "--"}</strong><div>Latest bus V</div></div>
-                </div>
-
-                {latestBreadcrumb ? (
-                  <div className="trip-mfd-latest-row">
-                    <span>Position {latestBreadcrumb.latitude.toFixed(5)}, {latestBreadcrumb.longitude.toFixed(5)}</span>
-                    <span>{new Date(latestBreadcrumb.time).toLocaleTimeString([], { hour: "numeric", minute: "2-digit", second: "2-digit" })}</span>
-                    <span>{latestBreadcrumb.source}</span>
-                  </div>
-                ) : null}
-
-                <div className="trip-mfd-time-row">
-                  <span>Start {startedAtLabel}</span>
-                  <span>{isViewingCurrentTrip ? "Track is active" : (endedAtLabel ? `End ${endedAtLabel}` : "End --")}</span>
-                </div>
+                <span className="trip-card__tag">{tripDetail.tag}</span>
               </div>
-            ) : null}
 
-            <div className="trip-route-map-shell trip-route-map-shell--top">
-              {renderTripRouteMap("trip-route-map")}
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))", gap: 8 }}>
+                <div><strong>{tripDetail.distanceNm.toFixed(2)}</strong><div>NM</div></div>
+                <div><strong>{tripDetail.startedAt ? new Date(tripDetail.startedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : "--"}</strong><div>started</div></div>
+                <div><strong>{tripDetail.endedAt ? new Date(tripDetail.endedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : "live"}</strong><div>ended</div></div>
+                <div><strong>{tripDetail.breadcrumbs.length}</strong><div>breadcrumbs</div></div>
+                <div><strong>{tripDetail.averageSpeedKnots.toFixed(1)}</strong><div>avg kt</div></div>
+                <div><strong>{tripDetail.averageRpmTotal.toFixed(0)}</strong><div>avg RPM</div></div>
+                <div><strong>{tripDetail.maxEngineTempF.toFixed(0)}</strong><div>max eng temp F</div></div>
+                <div><strong>{tripDetail.averageFuelBurnGph.toFixed(1)}</strong><div>avg gph</div></div>
+              </div>
             </div>
+          ) : null}
+
+          <div className="trip-route-map-shell">
+            {renderTripRouteMap("trip-route-map")}
           </div>
 
           {breadcrumbRows.length > 0 ? (
-            <div className="panel trip-breadcrumb-panel trip-breadcrumb-panel--padded">
-              <div className="trip-breadcrumb-panel__header">
-                <p className="panel__eyebrow trip-breadcrumb-panel__eyebrow">Breadcrumb data log</p>
-                <span className="trip-breadcrumb-panel__count">Most recent {breadcrumbRows.length} points</span>
+            <div className="panel" style={{ marginBottom: 16, padding: 16 }}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
+                <p className="panel__eyebrow" style={{ margin: 0 }}>Breadcrumb data log</p>
+                <span style={{ fontSize: 12, opacity: 0.75 }}>Most recent {breadcrumbRows.length} points</span>
               </div>
-              <div className="trip-breadcrumb-log">
-                <table className="trip-breadcrumb-table">
+              <div style={{ overflowX: "auto" }}>
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
                   <thead>
                     <tr>
                       <th style={{ textAlign: "left", padding: "6px 4px" }}>Time</th>
@@ -7807,32 +4902,12 @@ export function App() {
           ) : null}
 
           <div className="trips-panel">
-            {tripHistory.length === 0 ? (
-              <div className="trip-history-empty panel">
-                <p className="panel__eyebrow">No saved trips yet</p>
-                <strong>Start a trip to begin logging track history.</strong>
-              </div>
-            ) : null}
             {tripHistory.length > 0 ? tripHistory.map((trip) => (
               <TripSummaryCard
                 key={trip.id || trip.title}
                 trip={trip}
-                selected={selectedTripId === trip.id || (isViewingCurrentTrip && tripSession?.id === trip.id)}
+                selected={selectedTripId === trip.id || (!selectedTripId && trip.id === tripDetail?.id)}
                 onSelect={setSelectedTripId}
-                onDelete={(tripId) => {
-                  const selected = tripHistory.find((entry) => entry.id === tripId);
-                  const label = selected?.title ?? "this trip";
-                  if (selected && (selected.origin ?? "local") !== "local") {
-                    setTripControlMessage("Cruise Report trips are read-only in this view.");
-                    return;
-                  }
-                  if (!window.confirm(`Delete ${label}? This cannot be undone.`)) {
-                    return;
-                  }
-
-                  deleteSavedTrip(tripId);
-                }}
-                deleteDisabled={tripSession?.id === trip.id || (trip.origin ?? "local") !== "local"}
               />
             )) : null}
           </div>
@@ -7844,7 +4919,7 @@ export function App() {
       const btHint = btScanning
         ? "Scanning for nearby devices..."
         : btScanResults.length === 0
-          ? "Put the stereo in pairing mode, then tap scan. Use Forget device if you need a clean re-pair."
+          ? "Put the stereo in pairing mode, then tap scan."
           : `${btScanResults.length} device${btScanResults.length === 1 ? "" : "s"} found.`;
 
       return (
@@ -7854,16 +4929,14 @@ export function App() {
               <p className="panel__eyebrow">Settings</p>
               <h2>System controls</h2>
             </div>
-            <div className="settings-header-actions" />
           </div>
 
-          <div className="settings-kiosk__pager settings-kiosk__pager--compact" role="tablist" aria-label="Settings pages">
+          <div className="settings-kiosk__pager" role="tablist" aria-label="Settings pages">
             <button
               type="button"
               role="tab"
               aria-selected={settingsSubview === "bluetooth"}
               className={settingsSubview === "bluetooth" ? "settings-kiosk__pager-btn settings-kiosk__pager-btn--active" : "settings-kiosk__pager-btn"}
-              style={compactSettingsTabStyle}
               onClick={() => setSettingsSubview("bluetooth")}
             >
               Bluetooth
@@ -7873,7 +4946,6 @@ export function App() {
               role="tab"
               aria-selected={settingsSubview === "wifi"}
               className={settingsSubview === "wifi" ? "settings-kiosk__pager-btn settings-kiosk__pager-btn--active" : "settings-kiosk__pager-btn"}
-              style={compactSettingsTabStyle}
               onClick={() => {
                 setSettingsSubview("wifi");
                 setWifiHasManualScan(false);
@@ -7887,7 +4959,6 @@ export function App() {
               role="tab"
               aria-selected={settingsSubview === "remote"}
               className={settingsSubview === "remote" ? "settings-kiosk__pager-btn settings-kiosk__pager-btn--active" : "settings-kiosk__pager-btn"}
-              style={compactSettingsTabStyle}
               onClick={() => setSettingsSubview("remote")}
             >
               Remote
@@ -7897,7 +4968,6 @@ export function App() {
               role="tab"
               aria-selected={settingsSubview === "updates"}
               className={settingsSubview === "updates" ? "settings-kiosk__pager-btn settings-kiosk__pager-btn--active" : "settings-kiosk__pager-btn"}
-              style={compactSettingsTabStyle}
               onClick={() => setSettingsSubview("updates")}
             >
               Updates
@@ -7907,7 +4977,7 @@ export function App() {
           <div className="settings-kiosk__body">
             {settingsSubview === "bluetooth" ? (
               <>
-                <div className="home-panel__quick-grid settings-kiosk__summary settings-kiosk__summary--compact">
+                <div className="home-panel__quick-grid settings-kiosk__summary">
                   <article className="home-panel__quick-card">
                     <span className="home-panel__quick-label">Bluetooth device</span>
                     <strong>{bluetoothState.device}</strong>
@@ -7935,14 +5005,7 @@ export function App() {
                     Reconnect now
                   </button>
                   <button className="theme-toggle" type="button" onClick={() => void handleBluetoothAction("route-audio")} disabled={!bluetoothState.config.routeConfigured}>Route audio</button>
-                  <button
-                    className="theme-toggle"
-                    type="button"
-                    onClick={() => void handleForgetBtDevice()}
-                    disabled={!bluetoothState.config.disconnectConfigured || runningBtWorkflowId !== null}
-                  >
-                    Forget device
-                  </button>
+                  <button className="theme-toggle" type="button" onClick={() => void handleBluetoothAction("disconnect")} disabled={!bluetoothState.config.disconnectConfigured}>Disconnect</button>
                 </div>
 
                 <div className="bt-scan-section settings-kiosk__scan">
@@ -8086,9 +5149,6 @@ export function App() {
                   <button className="theme-toggle" type="button" onClick={() => void handleRemoteTunnelAction("status")} disabled={runningRemoteTunnelAction !== null}>Refresh tunnel</button>
                   <button className="theme-toggle" type="button" onClick={() => void handleRemoteTunnelAction("start")} disabled={runningRemoteTunnelAction !== null}>Start tunnel</button>
                   <button className="theme-toggle" type="button" onClick={() => void handleRemoteTunnelAction("restart")} disabled={runningRemoteTunnelAction !== null}>Restart tunnel</button>
-                  <button className="theme-toggle theme-toggle--primary" type="button" onClick={() => window.location.assign(signalKAdminUrl)}>
-                    Open Signal K Admin
-                  </button>
                 </div>
 
                 <button className="theme-toggle" type="button" onClick={() => void refreshRemoteOpsStatus()}>
@@ -8176,21 +5236,11 @@ export function App() {
   }
 
   async function handleKillLaunchedApp() {
-    const restoreCandidate = findLaunchTargetById(launcherState.appId);
-    const appToRestore = restoreCandidate?.id ?? lastRestorableAppId;
     setKillingLaunchedApp(true);
 
     try {
       const state = await sendKillLaunchedAppRequest();
-      setLauncherState({
-        ...state,
-        appId: "",
-        name: "",
-        subtitle: ""
-      });
-      if (appToRestore) {
-        setLastRestorableAppId(appToRestore);
-      }
+      setLauncherState(state);
       setShowRuntimePanel(false);
       setOnline(true);
     } catch {
@@ -8207,59 +5257,11 @@ export function App() {
     }
   }
 
-  async function handleRestoreLaunchedApp() {
-    const target = findLaunchTargetById(lastRestorableAppId) ?? findLaunchTargetById(launcherState.appId);
-    if (!target) {
-      return;
-    }
-
-    const section: "streaming" | "music" = streamingTargets.some((candidate) => candidate.id === target.id)
-      ? "streaming"
-      : "music";
-
-    setRestoringLaunchedApp(true);
-    try {
-      await launchAppTarget(target, section);
-      setOnline(true);
-    } catch {
-      setOnline(false);
-    } finally {
-      setRestoringLaunchedApp(false);
-    }
-  }
-
-  function selectNavItem(itemId: string) {
-    setSelectedNavId(itemId);
-  }
-
-  function handleNavPointerDown(itemId: string, pointerType: string) {
-    if (pointerType === "mouse") {
-      return;
-    }
-
-    lastTouchNavSelectionRef.current = { id: itemId, at: Date.now() };
-    selectNavItem(itemId);
-  }
-
-  function handleNavClick(itemId: string) {
-    const lastTouchSelection = lastTouchNavSelectionRef.current;
-    if (lastTouchSelection && lastTouchSelection.id === itemId && Date.now() - lastTouchSelection.at < 700) {
-      return;
-    }
-
-    selectNavItem(itemId);
-  }
-
   const isNativeRuntime = launcherState.runtime.trim().toLowerCase() === "native app process";
-  const activeLaunchTarget = findLaunchTargetById(launcherState.appId);
-  const appIsRunning = isNativeRuntime && launcherState.status === "Launched";
-  const killTargetName = appIsRunning ? launcherState.name : "";
-  const killTargetLogoPath = appIsRunning
-    ? activeLaunchTarget?.logoPath
+  const killTargetName = isNativeRuntime && launcherState.status === "Launched" ? launcherState.name : "";
+  const killTargetLogoPath = isNativeRuntime && launcherState.status === "Launched"
+    ? [...streamingTargets, ...musicTargets].find((target) => target.id === launcherState.appId)?.logoPath
     : undefined;
-  const restoreTarget = !appIsRunning ? findLaunchTargetById(lastRestorableAppId) : null;
-  const restoreTargetName = restoreTarget?.name ?? "";
-  const restoreTargetLogoPath = restoreTarget?.logoPath;
 
   // Clean remote-only layout — no dashboard tiles, just controls + app launch
   if (remoteMode) {
@@ -8277,12 +5279,6 @@ export function App() {
               <button className="kill-app-button kill-app-button--inline" type="button"
                 onClick={() => void handleKillLaunchedApp()} disabled={killingLaunchedApp}>
                 <span className="kill-app-button__name">{killingLaunchedApp ? "Closing…" : `✕ ${killTargetName}`}</span>
-              </button>
-            ) : null}
-            {restoreTargetName ? (
-              <button className="restore-app-button restore-app-button--inline" type="button"
-                onClick={() => void handleRestoreLaunchedApp()} disabled={restoringLaunchedApp || launching || killingLaunchedApp}>
-                <span className="restore-app-button__name">{restoringLaunchedApp ? "Restoring…" : `↺ ${restoreTargetName}`}</span>
               </button>
             ) : null}
           </header>
@@ -8381,10 +5377,6 @@ export function App() {
           killingApps={killingLaunchedApp}
           killTargetName={killTargetName}
           killTargetLogoPath={killTargetLogoPath}
-          restoringApp={restoringLaunchedApp || launching}
-          restoreTargetName={restoreTargetName}
-          restoreTargetLogoPath={restoreTargetLogoPath}
-          {...(!remoteMode ? { onRestoreApp: () => void handleRestoreLaunchedApp() } : {})}
           {...(!remoteMode ? { onKillApps: () => void handleKillLaunchedApp() } : {})}
         />
 
@@ -8403,8 +5395,7 @@ export function App() {
               key={item.id}
               type="button"
               className={item.id === selectedNavId ? "garmin-tabbar__item garmin-tabbar__item--active" : "garmin-tabbar__item"}
-              onPointerDown={(event) => handleNavPointerDown(item.id, event.pointerType)}
-              onClick={() => handleNavClick(item.id)}
+              onClick={() => setSelectedNavId(item.id)}
             >
               <span className="garmin-tabbar__label">{item.label}</span>
               <span className="garmin-tabbar__detail">{item.detail}</span>

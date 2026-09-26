@@ -5,6 +5,7 @@ import { existsSync, readdirSync } from "node:fs";
 type NmeaTelemetry = {
   speedKnots: number | null;
   headingDegrees: number | null;
+  headingSource: "compass" | "cog" | null;
   depthFeet: number | null;
   waterTempF: number | null;
   latitude: number | null;
@@ -88,6 +89,46 @@ function readPath(source: Record<string, unknown>, path: string): unknown {
     const record = current as Record<string, unknown>;
     return record[segment];
   }, source);
+}
+
+function parseSelfPath(selfPath: string) {
+  const segments = selfPath
+    .split(".")
+    .map((segment) => segment.trim())
+    .filter((segment) => segment.length > 0);
+
+  const vesselIndex = segments.indexOf("vessels");
+  const vesselId = vesselIndex >= 0 && vesselIndex + 1 < segments.length
+    ? segments[vesselIndex + 1]
+    : null;
+
+  return {
+    segments,
+    vesselId
+  };
+}
+
+function pickVesselFromMap(payload: unknown, preferredId: string | null = null): Record<string, unknown> | null {
+  const vessels = asRecord(payload);
+  if (!vessels) {
+    return null;
+  }
+
+  if (preferredId) {
+    const preferred = asRecord(vessels[preferredId]);
+    if (preferred) {
+      return preferred;
+    }
+  }
+
+  for (const value of Object.values(vessels)) {
+    const vessel = asRecord(value);
+    if (vessel) {
+      return vessel;
+    }
+  }
+
+  return null;
 }
 
 function firstNumber(source: Record<string, unknown>, paths: string[]) {
@@ -310,6 +351,7 @@ function parseNmea0183Telemetry(lines: string[]): NmeaTelemetry | null {
   return {
     speedKnots,
     headingDegrees,
+    headingSource: headingDegrees === null ? null : "compass",
     depthFeet,
     waterTempF,
     latitude,
@@ -430,12 +472,41 @@ async function fetchSignalKVesselSelf(): Promise<Record<string, unknown> | null>
     }
 
     const selfPath = typeof rootPayload.self === "string" ? rootPayload.self : null;
-    if (!selfPath || selfPath.length === 0) {
-      return null;
+    const parsedSelf = selfPath ? parseSelfPath(selfPath) : null;
+    const preferredVesselId = parsedSelf?.vesselId ?? null;
+
+    if (selfPath && selfPath.length > 0) {
+      const resolved = readPath(rootPayload, selfPath);
+      const resolvedRecord = asRecord(resolved);
+      if (resolvedRecord) {
+        return resolvedRecord;
+      }
     }
 
-    const resolved = readPath(rootPayload, selfPath);
-    return asRecord(resolved);
+    const rootVesselMap = pickVesselFromMap(rootPayload.vessels, preferredVesselId);
+    if (rootVesselMap) {
+      return rootVesselMap;
+    }
+
+    const vesselsResponse = await fetch(`${baseUrl}/signalk/v1/api/vessels`, {
+      headers: {
+        Accept: "application/json"
+      },
+      signal: controller.signal
+    });
+
+    if (vesselsResponse.ok) {
+      const vesselPayload = (await vesselsResponse.json()) as unknown;
+      const vesselFromEndpoint = pickVesselFromMap(vesselPayload, preferredVesselId);
+      if (vesselFromEndpoint) {
+        return vesselFromEndpoint;
+      }
+
+      // Signal K is reachable but has no vessel data yet.
+      return {};
+    }
+
+    return {};
   } catch {
     return null;
   } finally {
@@ -457,7 +528,17 @@ function toTelemetry(vesselSelf: Record<string, unknown>): NmeaTelemetry {
     "navigation.courseOverGroundTrue",
     "navigation.headingTrue"
   ];
-  const headingRadians = firstNumber(vesselSelf, headingPaths);
+  const compassHeadingRadians = firstNumber(vesselSelf, [
+    "navigation.headingMagnetic",
+    "navigation.headingTrue"
+  ]);
+  const cogRadians = firstNumber(vesselSelf, [
+    "navigation.courseOverGroundTrue",
+    "navigation.courseOverGroundMagnetic"
+  ]);
+  const headingRadians = compassHeadingRadians ?? cogRadians;
+  const headingSource: NmeaTelemetry["headingSource"] =
+    compassHeadingRadians !== null ? "compass" : (cogRadians !== null ? "cog" : null);
 
   const depthPaths = [
     "environment.depth.belowTransducer",
@@ -501,6 +582,7 @@ function toTelemetry(vesselSelf: Record<string, unknown>): NmeaTelemetry {
   return {
     speedKnots: speedMps === null ? null : mpsToKnots(speedMps),
     headingDegrees: headingRadians === null ? null : radiansToDegrees(headingRadians),
+    headingSource,
     depthFeet: depthMeters === null ? null : metersToFeet(depthMeters),
     waterTempF,
     latitude: position.latitude,
