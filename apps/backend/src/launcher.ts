@@ -1,4 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
+import { existsSync, readFileSync } from "node:fs";
 import { applyBluetoothAction, getBluetoothState } from "./bluetooth.js";
 
 export type LaunchRequest = {
@@ -27,12 +28,29 @@ type LaunchProcess = {
   command: string;
 };
 
+type BackgroundSession = {
+  appId: string;
+  windowId: string | null;
+  capturedAt: string;
+};
+
 type ResolvedLaunchCommand = {
   command: string;
   args: string[];
   shell: boolean;
   source: "configured" | "builtin";
 };
+
+const launcherDebugEnabled = (process.env.PALMER_LOU_LAUNCHER_DEBUG ?? "false").toLowerCase() === "true";
+
+function logLauncherDebug(event: string, details?: Record<string, unknown>) {
+  if (!launcherDebugEnabled) {
+    return;
+  }
+
+  const payload = details ? ` ${JSON.stringify(details)}` : "";
+  console.info(`[launcher] ${event}${payload}`);
+}
 
 function shellQuote(value: string) {
   return `'${value.replace(/'/g, "'\\''")}'`;
@@ -99,7 +117,54 @@ const browserBackedAppIds = new Set([
   "pandora"
 ]);
 const allowBrowserFallback = (process.env.PALMER_LOU_ALLOW_BROWSER_FALLBACK ?? "true").toLowerCase() === "true";
-const extensionDir = (process.env.PALMER_LOU_EXTENSION_DIR ?? "/home/palmerlou/palmer-lou-extension").trim();
+const browserProfileMode = (process.env.PALMER_LOU_BROWSER_PROFILE_MODE ?? "shared").toLowerCase();
+const browserProfileRoot = (process.env.PALMER_LOU_BROWSER_PROFILE_ROOT ?? "/home/palmerlou/snap/chromium/common/palmer-lou-apps").trim();
+
+function validateExtensionDir(candidate: string) {
+  const trimmed = candidate.trim();
+  if (!trimmed) {
+    return false;
+  }
+
+  const manifestPath = `${trimmed}/manifest.json`;
+  if (!existsSync(manifestPath)) {
+    return false;
+  }
+
+  try {
+    const manifestRaw = readFileSync(manifestPath, "utf8");
+    const parsed = JSON.parse(manifestRaw) as { manifest_version?: unknown; name?: unknown };
+    return Number.isFinite(parsed.manifest_version as number) && typeof parsed.name === "string";
+  } catch {
+    return false;
+  }
+}
+
+function resolveExtensionDir() {
+  const configured = (process.env.PALMER_LOU_EXTENSION_DIR ?? "").trim();
+  const fallback = "/home/palmerlou/palmer-lou-extension";
+
+  if (configured && validateExtensionDir(configured)) {
+    return configured;
+  }
+
+  if (configured && !validateExtensionDir(configured)) {
+    logLauncherDebug("extension-dir-invalid", { configured, fallback });
+  }
+
+  return validateExtensionDir(fallback) ? fallback : "";
+}
+
+const extensionDir = resolveExtensionDir();
+
+function resolveLaunchProfileDir(appId: string) {
+  const safeAppId = appId.replace(/[^a-z0-9_-]/gi, "").toLowerCase() || "app";
+  if (browserProfileMode === "per-app") {
+    return `${browserProfileRoot}/${safeAppId}`;
+  }
+
+  return `${browserProfileRoot}/shared`;
+}
 
 let launcherState: LauncherState = {
   appId: "",
@@ -113,6 +178,7 @@ let launcherState: LauncherState = {
 };
 
 let activeLaunchProcess: LaunchProcess | null = null;
+let lastBackgroundSession: BackgroundSession | null = null;
 
 const knownLaunchedAppProcessPatterns = [
   "palmer-lou-apps/youtube",
@@ -230,6 +296,8 @@ function buildSafeChromiumAppFlags(request: LaunchRequest) {
 
   const isVideoApp = ["youtube", "youtube-tv", "netflix", "paramount", "peacock", "disney"].includes(request.appId);
 
+  const launchProfileDir = resolveLaunchProfileDir(request.appId);
+
   return [
     "--start-fullscreen",
     request.launchUrl,
@@ -245,7 +313,7 @@ function buildSafeChromiumAppFlags(request: LaunchRequest) {
     "--disable-restore-session-state",
     "--hide-crash-restore-bubble",
     // snap/chromium/common is the only path snap Chromium's AppArmor profile allows writes to that survives reboots
-    `--user-data-dir=/home/palmerlou/snap/chromium/common/palmer-lou-apps/${request.appId}`,
+    `--user-data-dir=${launchProfileDir}`,
     // inject the Palmer Lou home button into every app window
     ...(extensionDir ? [`--load-extension=${extensionDir}`] : [])
   ];
@@ -256,66 +324,12 @@ function sanitizeConfiguredBrowserCommand(request: LaunchRequest, command: strin
     return command;
   }
 
-  const lowerCommand = command.toLowerCase();
-  const looksLikeChromium = /(^|\s)(chromium|chromium-browser|google-chrome|google-chrome-stable|chrome)(\s|$|\/)/.test(lowerCommand);
-  const looksLikeFirefox = /(^|\s)firefox(\s|$|\/)/.test(lowerCommand);
-
-  if (looksLikeFirefox) {
-    return command.includes(request.launchUrl)
-      ? command
-      : `${command.trim()} --kiosk ${request.launchUrl}`;
-  }
-
-  if (!looksLikeChromium) {
-    return command;
-  }
-
-  const normalized = command.trim();
-  const safeFlags = buildSafeChromiumAppFlags(request);
-
-  const commandTokens = normalized.split(/\s+/);
-  const filtered = commandTokens.filter((token) => {
-    if (token.startsWith("--disable-features=")) {
-      return false;
-    }
-
-    if (token.startsWith("--user-data-dir=")) {
-      return false;
-    }
-
-    if (token.startsWith("--app=")) {
-      return false;
-    }
-
-    if (token === "--kiosk") {
-      return false;
-    }
-
-    if (token.startsWith("http://") || token.startsWith("https://")) {
-      return false;
-    }
-
-    if (token === "--start-fullscreen" || token === "--no-first-run" || token === "--no-default-browser-check") {
-      return false;
-    }
-
-    if (token === "--disable-background-networking" || token === "--disable-component-update" || token === "--disable-sync") {
-      return false;
-    }
-
-    if (token === "--disable-session-crashed-bubble" || token === "--disable-infobars" || token === "--noerrdialogs") {
-      return false;
-    }
-
-    if (token === "--disable-restore-session-state" || token === "--hide-crash-restore-bubble") {
-      return false;
-    }
-
-    return true;
-  });
-
-  const rebuilt = [...filtered, ...safeFlags].join(" ");
-  return rebuilt.replace(/\s+/g, " ").trim();
+  // Preserve configured commands exactly (known-good media behavior),
+  // only repairing a known typoed extension path when present.
+  return command
+    .replace(/\/home\/palmerlou\/palmerlouextensikn\b/g, "/home/palmerlou/palmer-lou-extension")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function resolveBrowserLaunch(request: LaunchRequest, browserCommand: string) {
@@ -422,6 +436,7 @@ function stopActiveLaunchProcess() {
   }
 
   activeLaunchProcess = null;
+  lastBackgroundSession = null;
   return true;
 }
 
@@ -435,6 +450,67 @@ function stopKnownLaunchedAppProcesses() {
       stdio: "ignore"
     });
   }
+}
+
+function resolveAppProcessPatterns(appId: string) {
+  if (appId === "spotify") {
+    return ["palmer-lou-apps/spotify", "com.spotify.Client"];
+  }
+
+  return [`palmer-lou-apps/${appId}`];
+}
+
+function tryActivateExistingSession(appId: string) {
+  if (process.platform !== "linux") {
+    logLauncherDebug("restore-skipped", { reason: "non-linux", appId });
+    return false;
+  }
+
+  const display = (process.env.PALMER_LOU_LAUNCH_DISPLAY ?? ":0").trim() || ":0";
+  const runAsUser = (process.env.PALMER_LOU_LAUNCH_USER ?? "palmerlou").trim();
+  const patterns = resolveAppProcessPatterns(appId);
+  const preferredWindowId = lastBackgroundSession?.appId === appId
+    ? (lastBackgroundSession.windowId ?? "")
+    : "";
+
+  const script = [
+    `XAUTH=$(ls -1 /run/user/*/.mutter-Xwaylandauth.* 2>/dev/null | head -n 1)`,
+    `export DISPLAY=${shellQuote(display)}`,
+    `export XAUTHORITY="$XAUTH"`,
+    `WIN=""`,
+    `if [ -n ${shellQuote(preferredWindowId)} ]; then`,
+    `  xdotool getwindowname ${shellQuote(preferredWindowId)} >/dev/null 2>&1 && WIN=${shellQuote(preferredWindowId)}`,
+    `fi`,
+    `if [ -z "$WIN" ]; then`,
+    ...patterns.map((pattern) => `  for pid in $(pgrep -f ${shellQuote(pattern)} 2>/dev/null); do`),
+    `    found=$(xdotool search --pid "$pid" 2>/dev/null | head -1)`,
+    `    if [ -n "$found" ]; then WIN="$found"; break; fi`,
+    `  done`,
+    `  [ -n "$WIN" ] && break`,
+    `fi`,
+    `if [ -n "$WIN" ]; then`,
+    `  xdotool windowmap "$WIN" 2>/dev/null || true`,
+    `  xdotool windowactivate "$WIN" 2>/dev/null || true`,
+    `  exit 0`,
+    `fi`,
+    `exit 1`
+  ].join("\n");
+
+  const result = spawnSync("sudo", ["-u", runAsUser, "bash", "-lc", script], {
+    stdio: "ignore",
+    timeout: 3000,
+    killSignal: "SIGKILL"
+  });
+
+  logLauncherDebug("restore-attempt", {
+    appId,
+    preferredWindowId: preferredWindowId || null,
+    status: result.status,
+    signal: result.signal ?? null,
+    timedOut: result.error?.name === "Error" && /timed out/i.test(result.error.message)
+  });
+
+  return result.status === 0;
 }
 
 async function runCommand(resolved: ResolvedLaunchCommand | null) {
@@ -460,16 +536,38 @@ async function runCommand(resolved: ResolvedLaunchCommand | null) {
     pid: child.pid ?? 0,
     command: launchCommand.command
   };
+  lastBackgroundSession = null;
 
   return true;
 }
 
 export async function launchApp(request: LaunchRequest) {
-  // If the same app is already active, restore its minimized window instead of relaunching.
+  const shouldAttemptRestore =
+    (lastBackgroundSession?.appId === request.appId)
+    || (launcherState.appId === request.appId && (launcherState.status === "Launched" || launcherState.status === "Background"));
+
+  if (shouldAttemptRestore && tryActivateExistingSession(request.appId)) {
+    lastBackgroundSession = null;
+    launcherState = {
+      appId: request.appId,
+      name: request.name,
+      subtitle: request.launchLabel,
+      runtime: "Native app process",
+      status: "Launched",
+      message: `Restored existing ${request.name} session.`,
+      launchMethod: "Session restore",
+      startedAt: new Date().toISOString()
+    };
+
+    return launcherState;
+  }
+
+  // If the same app is already active (foreground or background), restore its
+  // window instead of relaunching it.
   if (
     process.platform === "linux" &&
     launcherState.appId === request.appId &&
-    launcherState.status === "Launched" &&
+    (launcherState.status === "Launched" || launcherState.status === "Background") &&
     activeLaunchProcess
   ) {
     const appId = request.appId;
@@ -492,9 +590,18 @@ export async function launchApp(request: LaunchRequest) {
     const proc = spawn("sudo", ["-u", runAsUser, "bash", "-lc", restoreScript], { stdio: "ignore", detached: true });
     proc.unref();
     setTimeout(() => { try { proc.kill(); } catch { /* already exited */ } }, 5000);
+    lastBackgroundSession = null;
+    launcherState = {
+      ...launcherState,
+      runtime: "Native app process",
+      status: "Launched",
+      message: `Restored ${request.name} to the foreground.`,
+      startedAt: new Date().toISOString()
+    };
     return launcherState;
   }
 
+  lastBackgroundSession = null;
   stopActiveLaunchProcess();
   stopKnownLaunchedAppProcesses();
   const requestedFromRemote = request.requestSource === "remote";
@@ -561,10 +668,50 @@ export async function launchApp(request: LaunchRequest) {
 }
 
 export async function returnToHome() {
-  if (activeLaunchProcess && process.platform === "linux" && launcherState.appId) {
+  // Capture the app currently in the foreground so we can keep showing its
+  // header icon while it runs in the background. Home only backgrounds an app;
+  // it never closes it.
+  const backgroundedAppId = launcherState.appId;
+  const backgroundedName = launcherState.name;
+  const backgroundedSubtitle = launcherState.subtitle;
+  const backgroundedLaunchMethod = launcherState.launchMethod;
+
+  if (process.platform === "linux") {
     const display = (process.env.PALMER_LOU_LAUNCH_DISPLAY ?? ":0").trim() || ":0";
     const runAsUser = (process.env.PALMER_LOU_LAUNCH_USER ?? "palmerlou").trim();
     const appId = launcherState.appId;
+    const appPatterns = appId ? resolveAppProcessPatterns(appId) : [];
+    let preferredWindowId = "";
+
+    const probeWindowScript = [
+      `XAUTH=$(ls -1 /run/user/*/.mutter-Xwaylandauth.* 2>/dev/null | head -n 1)`,
+      `export DISPLAY=${shellQuote(display)}`,
+      `export XAUTHORITY="$XAUTH"`,
+      `xdotool getactivewindow 2>/dev/null || true`
+    ].join("\n");
+
+    const windowProbe = spawnSync("sudo", ["-u", runAsUser, "bash", "-lc", probeWindowScript], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout: 1200,
+      killSignal: "SIGKILL"
+    });
+    preferredWindowId = windowProbe.stdout.trim();
+
+    if (appId) {
+      lastBackgroundSession = {
+        appId,
+        windowId: preferredWindowId || null,
+        capturedAt: new Date().toISOString()
+      };
+    }
+
+    logLauncherDebug("home-probe", {
+      appId: appId || null,
+      preferredWindowId: preferredWindowId || null,
+      status: windowProbe.status,
+      signal: windowProbe.signal ?? null
+    });
 
     // Minimize the app window and raise Palmer Lou without blocking the event loop.
     // XAUTHORITY must be set or xdotool/wmctrl silently fail with no X connection.
@@ -572,25 +719,57 @@ export async function returnToHome() {
       `XAUTH=$(ls -1 /run/user/*/.mutter-Xwaylandauth.* 2>/dev/null | head -n 1)`,
       `export DISPLAY=${shellQuote(display)}`,
       `export XAUTHORITY="$XAUTH"`,
-      // The home button was just clicked in the app window, so it is still the active window.
-      `TARGET=$(xdotool getactivewindow 2>/dev/null)`,
-      // Fall back to PID-based search for browser apps and Spotify flatpak.
+      `TARGET=""`,
+      // First, find the launched app window by process so we minimize the right app.
       `if [ -z "$TARGET" ]; then`,
-      `  MAIN_PID=$(pgrep -f ${shellQuote('palmer-lou-apps/' + appId)} | while read p; do`,
-      `    tr '\\0' ' ' </proc/$p/cmdline 2>/dev/null | grep -qv '\\-\\-type=' && echo $p`,
-      `  done | sort -n | head -1)`,
-      `  [ -z "$MAIN_PID" ] && MAIN_PID=$(pgrep -f 'com.spotify.Client' 2>/dev/null | sort -n | head -1)`,
+      `  MAIN_PID=""`,
+      ...appPatterns.map((pattern) => `  [ -z "$MAIN_PID" ] && MAIN_PID=$(pgrep -f ${shellQuote(pattern)} 2>/dev/null | sort -n | head -1)`),
       `  [ -n "$MAIN_PID" ] && TARGET=$(xdotool search --pid "$MAIN_PID" 2>/dev/null | head -1)`,
       `fi`,
+      // If we could not resolve by process, use the captured active window id.
+      `[ -z "$TARGET" ] && [ -n ${shellQuote(preferredWindowId)} ] && TARGET=${shellQuote(preferredWindowId)}`,
+      // Last fallback: whatever window is active right now.
+      `if [ -z "$TARGET" ]; then TARGET=$(xdotool getactivewindow 2>/dev/null); fi`,
       `[ -n "$TARGET" ] && xdotool windowminimize "$TARGET" 2>/dev/null || true`,
-      `wmctrl -a "Palmer Lou OS" 2>/dev/null || true`
+      `wmctrl -a "Palmer Lou OS" 2>/dev/null || true`,
+      `HOME_WIN=$(xdotool search --name "Palmer Lou OS" 2>/dev/null | head -1)`,
+      `[ -z "$HOME_WIN" ] && HOME_PID=$(pgrep -f 'http://127.0.0.1:8787' 2>/dev/null | sort -n | head -1)`,
+      `[ -z "$HOME_WIN" ] && [ -n "$HOME_PID" ] && HOME_WIN=$(xdotool search --pid "$HOME_PID" 2>/dev/null | head -1)`,
+      `[ -n "$HOME_WIN" ] && xdotool windowactivate --sync "$HOME_WIN" 2>/dev/null || true`
     ].join('\n');
 
     // Use spawn (non-blocking) so xdotool/wmctrl can never stall the HTTP server.
     const proc = spawn("sudo", ["-u", runAsUser, "bash", "-lc", script], { stdio: "ignore", detached: true });
     proc.unref();
+    logLauncherDebug("home-script-spawned", {
+      appId: appId || null,
+      pid: proc.pid ?? null
+    });
     // Hard-kill the window script after 5 s as a safety net.
     setTimeout(() => { try { proc.kill(); } catch { /* already exited */ } }, 5000);
+    setTimeout(() => {
+      logLauncherDebug("home-script-timeout-kill", {
+        appId: appId || null,
+        pid: proc.pid ?? null
+      });
+    }, 5000);
+  }
+
+  if (backgroundedAppId && (activeLaunchProcess || lastBackgroundSession)) {
+    // The app keeps running (audio continues). Retain its identity so Palmer Lou
+    // can show the header close icon and so re-tapping the tile restores it.
+    launcherState = {
+      appId: backgroundedAppId,
+      name: backgroundedName,
+      subtitle: backgroundedSubtitle,
+      runtime: "Native app process",
+      status: "Background",
+      message: `${backgroundedName || "The app"} is running in the background. Tap its header icon to close it, or open another app to replace it.`,
+      launchMethod: backgroundedLaunchMethod || "Background keep-alive",
+      startedAt: new Date().toISOString()
+    };
+
+    return launcherState;
   }
 
   launcherState = {
@@ -599,9 +778,7 @@ export async function returnToHome() {
     subtitle: "",
     runtime: "Bridge",
     status: "Idle",
-    message: activeLaunchProcess
-      ? "Home restored. Active media app continues in background until another launch replaces it."
-      : "No app launched yet.",
+    message: "No app launched yet.",
     launchMethod: "App bridge",
     startedAt: new Date().toISOString()
   };
@@ -610,19 +787,26 @@ export async function returnToHome() {
 }
 
 export async function killLaunchedApp() {
-  const hadActiveProcess = activeLaunchProcess !== null;
-  const stopped = stopActiveLaunchProcess();
+  const closingName = launcherState.name;
+  const hadActiveProcess = activeLaunchProcess !== null || launcherState.appId.length > 0;
+
+  stopActiveLaunchProcess();
+  if (process.platform === "linux") {
+    stopKnownLaunchedAppProcesses();
+  }
+  activeLaunchProcess = null;
+  lastBackgroundSession = null;
 
   launcherState = {
     appId: "",
     name: "",
     subtitle: "",
     runtime: "Bridge",
-    status: hadActiveProcess ? "App hidden from view" : "No running app process",
+    status: "Idle",
     message: hadActiveProcess
-      ? "Active app was dismissed from the Palmer Lou shell, but its background media process was left running."
+      ? `Closed ${closingName || "the active app"}.`
       : "No launched app process was running.",
-    launchMethod: "Background keep-alive",
+    launchMethod: "App closed",
     startedAt: new Date().toISOString()
   };
 

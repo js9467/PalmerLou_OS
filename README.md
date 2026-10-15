@@ -32,8 +32,12 @@ The backend serves the built UI from `apps/ui/dist`.
 
 You can map real Linux launch commands with `PALMER_LOU_LAUNCH_COMMANDS`, for example:
 
-```bash
-PALMER_LOU_LAUNCH_COMMANDS='{"youtube":"chromium --app=https://www.youtube.com/tv --start-fullscreen","youtube-tv":"chromium --app=https://tv.youtube.com/ --start-fullscreen","spotify":"flatpak run com.spotify.Client"}'
+```json
+{
+	"youtube": "chromium --app=https://www.youtube.com/tv --start-fullscreen",
+	"youtube-tv": "chromium --app=https://tv.youtube.com/ --start-fullscreen",
+	"spotify": "flatpak run com.spotify.Client"
+}
 ```
 
 ## Bluetooth wiring for production
@@ -118,11 +122,6 @@ Set:
 - `PALMER_LOU_SIGNALK_BASE_URL=http://127.0.0.1:3000`
 - `PALMER_LOU_SIGNALK_TIMEOUT_MS=1800`
 - `PALMER_LOU_NMEA_CACHE_MS=1500`
-- `PALMER_LOU_NMEA_STALE_MS=15000`
-- `PALMER_LOU_NMEA0183_ENABLED=true`
-- `PALMER_LOU_NMEA0183_DEVICE=/dev/ttyUSB0`
-- `PALMER_LOU_NMEA0183_BAUD=38400`
-- `PALMER_LOU_NMEA0183_READ_SECONDS=3`
 
 Expected Signal K values (read-only):
 
@@ -132,17 +131,6 @@ Expected Signal K values (read-only):
 - `environment.water.temperature` (Kelvin)
 
 When the feed is unavailable, the backend falls back to local mock values and reports status in `connectivity.nmea`.
-
-Direct boat-bus prep and validation is documented in `docs/nmea2000-direct-bus-readiness.md`.
-
-For plug-and-play behavior in Palmer Lou, no manual Signal K input is required as long as your gateway emits NMEA sentences on a USB serial device. The backend auto-detects `/dev/serial/by-id/*` and `/dev/ttyUSB*`/`/dev/ttyACM*`, then probes common baud rates.
-
-Run the preflight checker on the host after wiring:
-
-```bash
-chmod +x infrastructure/scripts/nmea-bridge-preflight.sh
-bash infrastructure/scripts/nmea-bridge-preflight.sh
-```
 
 ## Docker
 

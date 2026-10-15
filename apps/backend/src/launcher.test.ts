@@ -27,11 +27,9 @@ test("getLaunchCommand prefers configured commands for browser-backed apps even 
 
     assert.ok(result, "expected a configured launch command");
     assert.equal(result.source, "configured");
-    assert.ok(result.command.includes("--kiosk"));
     assert.ok(result.command.includes("https://www.youtube.com/tv"));
-    assert.ok(result.command.includes("--no-first-run"));
-    assert.ok(!result.command.includes("--app="));
-    assert.ok(result.command.includes("--user-data-dir=/tmp/palmer-lou-youtube"));
+    assert.ok(result.command.includes("--app="));
+    assert.ok(result.command.includes("--start-fullscreen"));
   } finally {
     if (previousCommandMap === undefined) {
       delete process.env.PALMER_LOU_LAUNCH_COMMANDS;
@@ -47,9 +45,10 @@ test("getLaunchCommand prefers configured commands for browser-backed apps even 
   }
 });
 
-test("killLaunchedApp leaves the background media process alive instead of hard-killing it", async () => {
+test("killLaunchedApp clears launcher state and reports no app when nothing is running", async () => {
   const result = await import("./launcher.js").then(({ killLaunchedApp }) => killLaunchedApp());
 
-  assert.equal(result.status, "No running app process");
+  assert.equal(result.appId, "");
+  assert.equal(result.status, "Idle");
   assert.ok(result.message.includes("No launched app process was running"));
 });

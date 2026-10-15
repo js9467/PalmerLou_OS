@@ -2,75 +2,40 @@
 
 This repo is designed to run as a local appliance shell on Ubuntu once the mini-PC is ready.
 
+The visual system is built around the artwork in `images/Palmer Lou Artwork.png`, with `images/Color Artwork.pdf` as the palette reference.
+
 ## Recommended base image
 
-- **Ubuntu 26.04 LTS Desktop** (current target).
-- During installation select "Minimal installation" — you need the desktop session for GDM auto-login, but no bundled apps.
-- Choose to install third-party drivers when prompted (covers Wi-Fi and GPU).
-
-## BIOS — power-loss survival (do this first)
-
-The boat has no graceful shutdown path. When the engine stops, 12 V drops and the mini-PC hard-powers-off. Configure the BIOS so the device recovers automatically:
-
-| Setting | Value |
-|---------|-------|
-| Restore AC Power Loss (or AC Power Recovery) | **Power On** |
-| Fast Boot | **Disabled** (ensures USB touch/display initialises at cold start) |
-| Boot Order | OS SSD first — disable PXE/network boot to eliminate POST delay |
-
-Access BIOS by pressing **Del** or **F2** at the POST screen immediately after power-on.
+- Ubuntu 24.04 LTS Desktop or minimal server plus a light desktop session.
+- Automatic power-on after power loss enabled in BIOS.
+- Local SSD installed with enough room for the UI, cache, and recording storage.
 
 ## Boot path
 
-1. Install Ubuntu 26.04 LTS on the mini-PC (minimal desktop).
-2. Clone this repo to `/opt/palmer-lou`.
-3. Install Node 22 (`nvm` or the NodeSource repo).
-4. Run `sudo ./infrastructure/scripts/install-linux.sh /opt/palmer-lou`.
-5. Reboot — the device should come up unattended, auto-login, and open the kiosk browser.
-
-## Hard power-off resilience
-
-The system is designed to survive yanked power at any point:
-
-**Backend service** (`palmer-lou-backend.service`)
-- Runs `node` directly — no npm wrapper, so SIGTERM reaches the process immediately.
-- `Restart=always` + `StartLimitIntervalSec=0` — restarts indefinitely without a backoff cap.
-- `TimeoutStopSec=3` — systemd sends SIGKILL after 3 s if the process does not exit cleanly.
-- All buoy data and scores are rebuilt from NOAA NDBC on each startup — no on-disk state to corrupt.
-
-**Kiosk browser**
-- Launched with `--incognito` so there is no session to restore after a dirty shutdown.
-- `--disable-session-crashed-bubble` and `--disable-restore-session-state` suppress all "Chrome didn't shut down correctly" prompts.
-- `--no-first-run` prevents first-run dialogs after OS updates.
-
-**Filesystem**
-- The backend holds all caches in memory only. There are no database writes or JSON files that can be left in a torn state.
-- Browser `localStorage` (fishing catches, map prefs) is written by the Chromium storage engine which uses atomic journal commits — data survives power loss.
-
-## GDM auto-login
-
-The install script patches `/etc/gdm3/custom.conf` to enable automatic login for the first human user. The kiosk `.desktop` file in `/etc/xdg/autostart` then starts Chromium in full-screen `--app` mode as soon as the desktop session is ready.
-
-If GDM auto-login is not set, the device will sit at the login screen after power-on with no one to press Enter — verify this works on first boot.
+1. Install Ubuntu on the mini-PC.
+2. Clone this repo to a fixed location such as `/opt/palmer-lou`.
+3. Install Node 22 or use the Docker path in this repo.
+4. Run the backend as a service.
+5. Start a kiosk browser against `http://127.0.0.1:8787`.
+6. Configure `PALMER_LOU_LAUNCH_COMMANDS` so streaming targets launch real Linux apps or app-mode windows.
 
 ## Backend service
 
 Use the unit file in `infrastructure/systemd/palmer-lou-backend.service` as the basis for a systemd service.
 
-For a one-shot install on the target PC, run:
-
-```bash
-sudo ./infrastructure/scripts/install-linux.sh /opt/palmer-lou
-```
+For a one-shot install on the target PC, run `sudo ./infrastructure/scripts/install-linux.sh /opt/palmer-lou` after cloning the repo there.
 
 ## Kiosk session
 
-The install script detects `google-chrome-stable`, `chromium-browser`, or `chromium` in that order. Google Chrome is preferred for better geolocation API support (used by the fishing map to center on the vessel's position).
+Launch Chromium or a comparable browser in kiosk mode with no chrome, no tabs, and no address bar.
 
-```bash
-# Verify the kiosk line looks correct after install
-cat /etc/xdg/autostart/palmer-lou-kiosk.desktop
+Example target:
+
+```text
+chromium --kiosk --incognito --disable-infobars --noerrdialogs http://127.0.0.1:8787
 ```
+
+The home screen launchers now call the backend app bridge, which can start and close native Linux processes.
 
 ## USB touch and display
 

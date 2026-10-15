@@ -6,10 +6,21 @@ import { fileURLToPath } from "node:url";
 import { applyBluetoothAction, getBluetoothState, runBluetoothDiagnostics, type BluetoothAction } from "./bluetooth.js";
 import { dashboardSummary } from "./mock-data.js";
 import { getNmeaTelemetry } from "./nmea.js";
-import { getLauncherState, launchApp, returnToHome } from "./launcher.js";
-import { getRemoteAccessStatus, getRemoteUpdateStatus, runRemoteUpdate, runTunnelAction, type RemoteAccessStatus } from "./remote.js";
+import { getLauncherState, killLaunchedApp, launchApp, returnToHome } from "./launcher.js";
+import {
+  getRemoteAccessStatus,
+  runRemotePointerAction,
+  getRemoteUpdateStatus,
+  runRemoteControlAction,
+  runRemoteTypeAction,
+  runRemoteUpdate,
+  runTunnelAction,
+  type RemoteAccessStatus,
+  type RemoteControlAction
+} from "./remote.js";
 import { resolveUpdateStatus } from "./update.js";
 import { scanWifiNetworks, joinWifiNetwork, disconnectWifiNetwork } from "./wifi.js";
+import { loadCruiseReportTrips } from "./signalk-integrations.js";
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, "../../..");
 const uiDist = path.resolve(repoRoot, "apps/ui/dist");
@@ -25,6 +36,9 @@ const OCEAN_TILE_CACHE_LIMIT = 1200;
 const TRANSPARENT_PNG_BUFFER = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/w8AAgMBgBqWcN0AAAAASUVORK5CYII=", "base64");
 const signalKUrl = new URL(signalKBaseUrl);
 const SIGNALK_PROXY_PREFIXES = ["/signalk", "/admin", "/plugins", "/@signalk", "/socket.io", "/signalk-", "/skServer", "/apps", "/restart"];
+const CRUISE_TRIPS_CACHE_TTL_MS = 45000;
+
+let cruiseTripsCache: { expiresAt: number; trips: unknown[] } | null = null;
 
 const HOP_BY_HOP_HEADERS = new Set([
   "connection",
@@ -1126,6 +1140,25 @@ async function buildSummary() {
   const nmea = await getNmeaTelemetry();
   baseSummary.connectivity.nmea = nmea.status;
 
+  const nowMs = Date.now();
+  if (cruiseTripsCache && cruiseTripsCache.expiresAt > nowMs) {
+    baseSummary.trips = cruiseTripsCache.trips;
+  } else {
+    try {
+      const cruiseReport = await loadCruiseReportTrips();
+      if (Array.isArray(cruiseReport.trips) && cruiseReport.trips.length > 0) {
+        baseSummary.trips = cruiseReport.trips;
+      }
+
+      cruiseTripsCache = {
+        expiresAt: nowMs + CRUISE_TRIPS_CACHE_TTL_MS,
+        trips: Array.isArray(baseSummary.trips) ? baseSummary.trips : []
+      };
+    } catch {
+      // Keep mock/default trips if integration fetch fails.
+    }
+  }
+
   if (nmea.telemetry) {
     const { speedKnots, headingDegrees, headingSource, depthFeet, waterTempF, latitude, longitude } = nmea.telemetry;
 
@@ -1449,13 +1482,26 @@ const server = http.createServer(async (req, res) => {
     }
   }
 
-  if (pathname === "/api/launch/return" && req.method === "POST") {
+  if (pathname === "/api/launch/return" && (req.method === "POST" || req.method === "GET")) {
     try {
       json(res, 200, await returnToHome());
       return;
     } catch (error) {
       json(res, 500, {
         error: "Failed to return home",
+        detail: error instanceof Error ? error.message : "Unknown error"
+      });
+      return;
+    }
+  }
+
+  if (pathname === "/api/launch/kill" && req.method === "POST") {
+    try {
+      json(res, 200, await killLaunchedApp());
+      return;
+    } catch (error) {
+      json(res, 500, {
+        error: "Failed to close launched app",
         detail: error instanceof Error ? error.message : "Unknown error"
       });
       return;
@@ -1490,6 +1536,78 @@ const server = http.createServer(async (req, res) => {
     } catch (error) {
       json(res, 500, {
         error: "Failed to run remote update",
+        detail: error instanceof Error ? error.message : "Unknown error"
+      });
+      return;
+    }
+  }
+
+  if (pathname === "/api/remote/control/action" && req.method === "POST") {
+    try {
+      const payload = await readRequestJson(req);
+      const action = payload?.action;
+      const repeatValue = Number(payload?.repeat ?? 1);
+      const repeat = Number.isFinite(repeatValue) ? Math.max(1, Math.min(8, Math.trunc(repeatValue))) : 1;
+      const allowedActions: RemoteControlAction[] = ["up", "down", "left", "right", "select", "back", "home", "playpause", "volup", "voldown", "mute", "backspace"];
+
+      if (typeof action !== "string" || !allowedActions.includes(action as RemoteControlAction)) {
+        json(res, 400, { error: "Invalid remote control action" });
+        return;
+      }
+
+      json(res, 200, await runRemoteControlAction(action as RemoteControlAction, repeat));
+      return;
+    } catch (error) {
+      json(res, 500, {
+        error: "Failed to run remote control action",
+        detail: error instanceof Error ? error.message : "Unknown error"
+      });
+      return;
+    }
+  }
+
+  if (pathname === "/api/remote/type" && req.method === "POST") {
+    try {
+      const payload = await readRequestJson(req);
+      const text = typeof payload?.text === "string" ? payload.text : "";
+
+      if (!text) {
+        json(res, 400, { error: "Missing text" });
+        return;
+      }
+
+      json(res, 200, await runRemoteTypeAction(text));
+      return;
+    } catch (error) {
+      json(res, 500, {
+        error: "Failed to run remote type action",
+        detail: error instanceof Error ? error.message : "Unknown error"
+      });
+      return;
+    }
+  }
+
+  if (pathname === "/api/remote/pointer" && req.method === "POST") {
+    try {
+      const payload = await readRequestJson(req);
+      const dx = typeof payload?.dx === "number" ? payload.dx : undefined;
+      const dy = typeof payload?.dy === "number" ? payload.dy : undefined;
+      const click = payload?.click === "left" || payload?.click === "right" ? payload.click : undefined;
+      const pointerInput: { dx?: number; dy?: number; click?: "left" | "right" } = {};
+      if (dx !== undefined) {
+        pointerInput.dx = dx;
+      }
+      if (dy !== undefined) {
+        pointerInput.dy = dy;
+      }
+      if (click !== undefined) {
+        pointerInput.click = click;
+      }
+      json(res, 200, await runRemotePointerAction(pointerInput));
+      return;
+    } catch (error) {
+      json(res, 500, {
+        error: "Failed to run remote pointer action",
         detail: error instanceof Error ? error.message : "Unknown error"
       });
       return;

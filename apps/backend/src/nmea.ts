@@ -655,7 +655,9 @@ export async function getNmeaTelemetry(): Promise<NmeaResult> {
   }
 
   const result: NmeaResult = {
-    telemetry: hasFreshValues ? telemetry : null,
+    // Preserve last-known values even when stale so downstream UI and trip
+    // logic can keep rendering position/metrics with explicit stale status.
+    telemetry: hasValues ? telemetry : null,
     status: hasFreshValues
       ? telemetry.source
       : hasValues

@@ -57,6 +57,13 @@ export type RemoteControlResult = {
   executedAt: string;
 };
 
+export type RemotePointerResult = {
+  success: boolean;
+  status: string;
+  output: string | null;
+  executedAt: string;
+};
+
 const MAX_OUTPUT_CHARS = 12000;
 
 let lastTunnelAction = "Idle";
@@ -509,6 +516,74 @@ export async function runRemoteControlAction(action: RemoteControlAction, repeat
       status: "Remote control command failed",
       output: detail,
       executedAt
+    };
+  }
+}
+
+export async function runRemotePointerAction(input: { dx?: number; dy?: number; click?: "left" | "right"; }): Promise<RemotePointerResult> {
+  if (process.platform !== "linux") {
+    return {
+      success: false,
+      status: "Pointer control unsupported on this platform",
+      output: null,
+      executedAt: new Date().toISOString()
+    };
+  }
+
+  const display = (process.env.PALMER_LOU_REMOTE_CONTROL_DISPLAY ?? ":0").trim();
+  const runAsUser = (process.env.PALMER_LOU_REMOTE_CONTROL_USER ?? "palmerlou").trim();
+  const xauthExpr = "$(ls -1 /run/user/*/.mutter-Xwaylandauth.* 2>/dev/null | head -n 1)";
+  const dx = Number.isFinite(input.dx) ? Math.max(-300, Math.min(300, Math.trunc(input.dx as number))) : 0;
+  const dy = Number.isFinite(input.dy) ? Math.max(-300, Math.min(300, Math.trunc(input.dy as number))) : 0;
+  const clickButton = input.click === "right" ? 3 : input.click === "left" ? 1 : null;
+
+  if (dx === 0 && dy === 0 && clickButton === null) {
+    return {
+      success: false,
+      status: "No pointer action provided",
+      output: null,
+      executedAt: new Date().toISOString()
+    };
+  }
+
+  const core = [
+    `XAUTH=${xauthExpr}`,
+    `export DISPLAY=${shellQuote(display)}`,
+    `export XAUTHORITY="$XAUTH"`,
+    `TARGET=""`,
+    `for wid in $(xdotool search --class chromium 2>/dev/null); do`,
+    `  nm=$(xdotool getwindowname "$wid" 2>/dev/null); case "$nm" in *[Pp]almer*|'') continue;; esac`,
+    `  TARGET="$wid"; break`,
+    `done`,
+    `[ -z "$TARGET" ] && TARGET=$(xdotool search --class spotify 2>/dev/null | head -1)`,
+    `if [ -n "$TARGET" ]; then`,
+    `  xdotool windowmap "$TARGET" 2>/dev/null || true`,
+    `  xdotool windowactivate "$TARGET" 2>/dev/null || true`,
+    ...(dx !== 0 || dy !== 0 ? [`  xdotool mousemove_relative -- ${dx} ${dy}`] : []),
+    ...(clickButton !== null ? [`  xdotool click --window "$TARGET" ${clickButton} 2>/dev/null || true`] : []),
+    `else`,
+    ...(dx !== 0 || dy !== 0 ? [`  xdotool mousemove_relative -- ${dx} ${dy}`] : []),
+    ...(clickButton !== null ? [`  xdotool click ${clickButton} 2>/dev/null || true`] : []),
+    `fi`
+  ].join("\n");
+
+  const cmd = runAsUser ? `sudo -u ${shellQuote(runAsUser)} bash -lc ${shellQuote(core)}` : core;
+
+  try {
+    const output = await runShell(cmd, 5000);
+    return {
+      success: true,
+      status: clickButton !== null ? "Pointer click sent" : "Pointer move sent",
+      output: output || null,
+      executedAt: new Date().toISOString()
+    };
+  } catch (error) {
+    const detail = trimOutput(error instanceof Error ? error.message : "Pointer command failed");
+    return {
+      success: false,
+      status: "Pointer command failed",
+      output: detail,
+      executedAt: new Date().toISOString()
     };
   }
 }

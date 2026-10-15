@@ -384,7 +384,7 @@ export async function runRemoteUpdateApply() {
   return response.json() as Promise<RemoteUpdateStatus>;
 }
 
-export async function sendRemoteControlAction(action: "up" | "down" | "left" | "right" | "select" | "back" | "home" | "playpause" | "volup" | "voldown" | "mute", repeat = 1) {
+export async function sendRemoteControlAction(action: "up" | "down" | "left" | "right" | "select" | "back" | "home" | "playpause" | "volup" | "voldown" | "mute" | "backspace", repeat = 1) {
   const response = await fetch("/api/remote/control/action", {
     method: "POST",
     headers: {
@@ -421,6 +421,28 @@ export async function sendRemoteTypeRequest(text: string) {
   }
 
   return response.json() as Promise<{ success: boolean; text: string; executedAt: string }>;
+}
+
+export async function sendRemotePointerAction(payload: { dx?: number; dy?: number; click?: "left" | "right"; }) {
+  const response = await fetch("/api/remote/pointer", {
+    method: "POST",
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(payload)
+  });
+
+  if (!response.ok) {
+    throw new Error(`Failed remote pointer action: ${response.status}`);
+  }
+
+  return response.json() as Promise<{
+    success: boolean;
+    status: string;
+    output: string | null;
+    executedAt: string;
+  }>;
 }
 
 export async function loadOceanBuoys(bounds: {

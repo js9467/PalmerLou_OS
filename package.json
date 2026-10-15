@@ -12,7 +12,6 @@
     "check": "npm run check -w apps/ui && npm run check -w apps/backend"
   },
   "devDependencies": {
-    "@types/leaflet": "^1.9.22",
     "@types/node": "^22.13.14",
     "concurrently": "^9.1.2",
     "tsx": "^4.20.3",

@@ -11,7 +11,6 @@ import { assetUrl } from "./lib/assetUrl";
 import {
   appendTripBreadcrumb,
   finalizeTripLog,
-  shouldEndTripAtHome,
   startTripLog,
   readStoredTrips,
   writeStoredTrips,
@@ -37,6 +36,7 @@ import {
   sendKillLaunchedAppRequest,
   sendLaunchRequest,
   sendRemoteControlAction,
+  sendRemotePointerAction,
   sendRemoteTypeRequest,
   sendRemoteTunnelAction,
   sendReturnHomeRequest,
@@ -65,6 +65,29 @@ const HOME_TILE_LAYOUT_STORAGE_KEY = "palmer-lou-home-tile-layout";
 const CUSTOM_BAIT_PRESETS_STORAGE_KEY = "palmer-lou-custom-bait-presets";
 const FISHING_MAP_PREFS_STORAGE_KEY = "palmer-lou-fishing-map-prefs";
 const TRIP_LOG_STORAGE_KEY = "palmer-lou-trip-log";
+const ACTIVE_TRIP_STORAGE_KEY = "palmer-lou-active-trip";
+const HOME_PORT_STORAGE_KEY = "palmer-lou-home-port";
+const AUTO_TRIP_START_MIN_SPEED_KTS = 1.2;
+const AUTO_TRIP_START_MIN_ENGINE_RPM = 850;
+const AUTO_TRIP_STOP_MAX_SPEED_KTS = 0.7;
+const AUTO_TRIP_STOP_MAX_ENGINE_RPM = 650;
+const AUTO_TRIP_START_MIN_MOVING_SAMPLES = 2;
+const AUTO_TRIP_STOP_MIN_STOPPED_SAMPLES = 3;
+const AUTO_TRIP_POSITION_MOVE_MIN_NM = 0.004;
+const AUTO_TRIP_POSITION_MOVE_MIN_SPEED_KTS = 0.8;
+const AUTO_TRIP_POSITION_STOP_MAX_MOVE_NM = 0.0012;
+const AUTO_TRIP_POSITION_STOP_MIN_ELAPSED_MS = 4000;
+const TRIP_BREADCRUMB_MIN_INTERVAL_MS = 2500;
+const TRIP_BREADCRUMB_MIN_MOVE_NM = 0.003;
+const TRACKPAD_TAP_MAX_MOVE_PX = 14;
+const TRACKPAD_POINTER_MIN_DELTA_PX = 2;
+const TRACKPAD_POINTER_GAIN_DEFAULT = 1.6;
+const TRACKPAD_POINTER_GAIN_MIN = 0.8;
+const TRACKPAD_POINTER_GAIN_MAX = 3.2;
+const TRACKPAD_POINTER_GAIN_STEP = 0.1;
+const TRACKPAD_POINTER_GAIN_STORAGE_KEY = "palmer-lou-trackpad-pointer-gain";
+const TRACKPAD_POINTER_SEND_INTERVAL_MS = 28;
+const TRACKPAD_POINTER_MAX_STEP = 48;
 const pelagicSpecies = ["Tuna", "Billfish", "Swordfish", "Kingfish", "Wahoo", "Mahi Mahi"];
 const BAIT_TYPE_FILTERS = ["All types", "Live bait", "Artificial", "Trolling", "Jigging"] as const;
 const BAIT_COLOR_FILTERS = ["All colors", "Natural", "Blue/White", "Pink", "Green", "Purple", "Red/Black", "Silver"] as const;
@@ -123,6 +146,75 @@ function readTripHomeRadius(): number {
   }
 
   return Math.min(Math.max(parsed, 0.05), 2.5);
+}
+
+function readTrackpadPointerGain(): number {
+  if (typeof window === "undefined") {
+    return TRACKPAD_POINTER_GAIN_DEFAULT;
+  }
+
+  const raw = window.localStorage.getItem(TRACKPAD_POINTER_GAIN_STORAGE_KEY);
+  if (!raw) {
+    return TRACKPAD_POINTER_GAIN_DEFAULT;
+  }
+
+  const parsed = Number.parseFloat(raw);
+  if (!Number.isFinite(parsed)) {
+    return TRACKPAD_POINTER_GAIN_DEFAULT;
+  }
+
+  return Math.min(TRACKPAD_POINTER_GAIN_MAX, Math.max(TRACKPAD_POINTER_GAIN_MIN, parsed));
+}
+
+function readStoredHomePort(): { latitude: number; longitude: number } | null {
+  if (typeof window === "undefined") {
+    return null;
+  }
+
+  const raw = window.localStorage.getItem(HOME_PORT_STORAGE_KEY);
+  if (!raw) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(raw) as { latitude?: unknown; longitude?: unknown };
+    if (typeof parsed.latitude !== "number" || typeof parsed.longitude !== "number") {
+      return null;
+    }
+
+    return {
+      latitude: parsed.latitude,
+      longitude: parsed.longitude
+    };
+  } catch {
+    return null;
+  }
+}
+
+function readActiveTripDraft(): TripLog | null {
+  if (typeof window === "undefined") {
+    return null;
+  }
+
+  try {
+    const raw = window.localStorage.getItem(ACTIVE_TRIP_STORAGE_KEY);
+    if (!raw) {
+      return null;
+    }
+
+    const parsed = JSON.parse(raw) as TripLog;
+    if (!parsed || typeof parsed !== "object") {
+      return null;
+    }
+
+    if (typeof parsed.id !== "string" || !Array.isArray(parsed.breadcrumbs)) {
+      return null;
+    }
+
+    return parsed;
+  } catch {
+    return null;
+  }
 }
 
 const BAIT_PRESETS: BaitPreset[] = [
@@ -226,7 +318,8 @@ type FishingBasemap = "nautical" | "standard" | "satellite";
 type OceanOverlayId = "sst" | "chlorophyll" | "currents" | "contours" | "fronts";
 type OceanTileOverlayId = "sst" | "chlorophyll" | "currents";
 type FishingSubview = "map" | "logbook";
-type SettingsSubview = "bluetooth" | "wifi" | "remote" | "updates";
+type SettingsSubview = "bluetooth" | "wifi" | "remote" | "remote-qr" | "updates";
+type TripsSubview = "current" | "history";
 
 type FishMappingCircle = {
   id: string;
@@ -448,6 +541,27 @@ function TripRouteViewport({ target }: { target: [number, number] }) {
     lastTargetRef.current = [lat, lng];
     map.setView([lat, lng], map.getZoom(), { animate: true });
   }, [target, map]);
+
+  return null;
+}
+
+function TripRouteMapAutoResize({ refreshToken }: { refreshToken: string }) {
+  const map = useMap();
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    const resizeNow = () => map.invalidateSize({ pan: false });
+    const first = window.setTimeout(resizeNow, 80);
+    const second = window.setTimeout(resizeNow, 260);
+
+    return () => {
+      window.clearTimeout(first);
+      window.clearTimeout(second);
+    };
+  }, [map, refreshToken]);
 
   return null;
 }
@@ -1282,8 +1396,16 @@ export function App() {
   const [remoteOpsError, setRemoteOpsError] = useState<string | null>(null);
   const [runningRemoteControlAction, setRunningRemoteControlAction] = useState<RemoteControlAction | null>(null);
   const [remoteControlStatus, setRemoteControlStatus] = useState("Remote controls ready");
+  const [trackpadStatus, setTrackpadStatus] = useState("Tap to select, swipe to move");
+  const [trackpadPointerGain, setTrackpadPointerGain] = useState(() => readTrackpadPointerGain());
   const [showKeyboard, setShowKeyboard] = useState(false);
   const [keyboardShift, setKeyboardShift] = useState(false);
+  const trackpadStartRef = useRef<{ x: number; y: number } | null>(null);
+  const trackpadLastRef = useRef<{ x: number; y: number } | null>(null);
+  const trackpadTotalMoveRef = useRef(0);
+  const trackpadPendingRef = useRef({ dx: 0, dy: 0 });
+  const trackpadSendingRef = useRef(false);
+  const trackpadLastSentAtRef = useRef(0);
   const [trendBaseTime] = useState(() => Date.now());
   const [depthTempTrend, setDepthTempTrend] = useState<Array<{ timestamp: string; depthFeet: number | null; waterTempF: number | null }>>([]);
   const [homeTileLayout, setHomeTileLayout] = useState<HomeTileId[]>(() => readHomeTileLayout());
@@ -1293,8 +1415,33 @@ export function App() {
   const [selectedTripId, setSelectedTripId] = useState<string | null>(null);
   const [tripHomeRadiusNm, setTripHomeRadiusNm] = useState<number>(() => readTripHomeRadius());
   const [tripMapFullscreen, setTripMapFullscreen] = useState(false);
+  const [homePort, setHomePort] = useState<{ latitude: number; longitude: number } | null>(() => readStoredHomePort());
+  const [tripsSubview, setTripsSubview] = useState<TripsSubview>("current");
+  const [selectedBreadcrumbTime, setSelectedBreadcrumbTime] = useState<string | null>(null);
   const activeTripRef = useRef<TripLog | null>(null);
+  const movingSampleCountRef = useRef(0);
+  const stoppedSampleCountRef = useRef(0);
+  const lastMovementSampleRef = useRef<{ latitude: number; longitude: number; sampledAtMs: number } | null>(null);
   const activeSummary = summary ?? fallbackSummary;
+  const summaryRef = useRef<DashboardSummary>(activeSummary);
+  const launchingRef = useRef(false);
+  const remoteQrTargetUrl = remoteAccessStatus.viewUrl.trim().length > 0 ? remoteAccessStatus.viewUrl : remoteAccessUrl;
+  const remoteQrImageSrc = useMemo(() => {
+    const target = remoteQrTargetUrl.trim();
+    if (!target) {
+      return assetUrl("/brand/remote-qr.svg");
+    }
+
+    return `https://api.qrserver.com/v1/create-qr-code/?size=560x560&format=svg&margin=8&data=${encodeURIComponent(target)}`;
+  }, [remoteQrTargetUrl]);
+
+  useEffect(() => {
+    summaryRef.current = activeSummary;
+  }, [activeSummary]);
+
+  useEffect(() => {
+    launchingRef.current = launching || killingLaunchedApp;
+  }, [launching, killingLaunchedApp]);
 
   const vibrateRemote = (pattern: number | number[]) => {
     if (!remoteMode || typeof navigator === "undefined" || typeof navigator.vibrate !== "function") {
@@ -1388,18 +1535,68 @@ export function App() {
     breadcrumbs: trip.breadcrumbs
   });
 
-  function buildTripTelemetrySnapshot() {
-    const speedKnots = Number.parseFloat((activeSummary?.metrics.find((metric) => metric.label === "Speed")?.value ?? "0")) || null;
-    const headingDegrees = Number.parseFloat((activeSummary?.metrics.find((metric) => metric.label === "Heading")?.value ?? "0")) || null;
-    const depthFeet = Number.parseFloat((activeSummary?.metrics.find((metric) => metric.label === "Depth")?.value ?? "0")) || null;
-    const waterTempF = activeSummary?.weather.waterTemp && activeSummary.weather.waterTemp.includes("F")
-      ? Number.parseFloat(activeSummary.weather.waterTemp)
+  const persistActiveTrip = (trip: TripLog | null) => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    if (!trip) {
+      window.localStorage.removeItem(ACTIVE_TRIP_STORAGE_KEY);
+      return;
+    }
+
+    window.localStorage.setItem(ACTIVE_TRIP_STORAGE_KEY, JSON.stringify(trip));
+  };
+
+  const mergeTripHistories = (current: TripDescriptor[], incoming: TripDescriptor[]) => {
+    if (!Array.isArray(incoming) || incoming.length === 0) {
+      return current;
+    }
+
+    const merged = new Map<string, TripDescriptor>();
+
+    current.forEach((trip) => {
+      if (trip?.id) {
+        merged.set(trip.id, trip);
+      }
+    });
+
+    incoming.forEach((trip) => {
+      if (!trip?.id) {
+        return;
+      }
+
+      const existing = merged.get(trip.id);
+      if (!existing) {
+        merged.set(trip.id, trip);
+        return;
+      }
+
+      const existingPoints = existing.breadcrumbs?.length ?? 0;
+      const nextPoints = trip.breadcrumbs?.length ?? 0;
+      const existingStarted = Date.parse(existing.startedAt);
+      const nextStarted = Date.parse(trip.startedAt);
+
+      if (nextPoints > existingPoints || (!Number.isNaN(nextStarted) && nextStarted > existingStarted)) {
+        merged.set(trip.id, trip);
+      }
+    });
+
+    return Array.from(merged.values()).sort((a, b) => Date.parse(b.startedAt) - Date.parse(a.startedAt)).slice(0, 48);
+  };
+
+  function buildTripTelemetrySnapshot(summaryInput: DashboardSummary = activeSummary) {
+    const speedKnots = Number.parseFloat((summaryInput?.metrics.find((metric) => metric.label === "Speed")?.value ?? "0")) || null;
+    const headingDegrees = Number.parseFloat((summaryInput?.metrics.find((metric) => metric.label === "Heading")?.value ?? "0")) || null;
+    const depthFeet = Number.parseFloat((summaryInput?.metrics.find((metric) => metric.label === "Depth")?.value ?? "0")) || null;
+    const waterTempF = summaryInput?.weather.waterTemp && summaryInput.weather.waterTemp.includes("F")
+      ? Number.parseFloat(summaryInput.weather.waterTemp)
       : null;
 
-    const portEngine = activeSummary?.engines.find((engine) => engine.label.toLowerCase().includes("port"));
-    const centerEngine = activeSummary?.engines.find((engine) => engine.label.toLowerCase().includes("center"));
-    const starboardEngine = activeSummary?.engines.find((engine) => engine.label.toLowerCase().includes("starboard"));
-    const validEngines = (activeSummary?.engines ?? []).filter((engine) => Number.isFinite(engine.rpm));
+    const portEngine = summaryInput?.engines.find((engine) => engine.label.toLowerCase().includes("port"));
+    const centerEngine = summaryInput?.engines.find((engine) => engine.label.toLowerCase().includes("center"));
+    const starboardEngine = summaryInput?.engines.find((engine) => engine.label.toLowerCase().includes("starboard"));
+    const validEngines = (summaryInput?.engines ?? []).filter((engine) => Number.isFinite(engine.rpm));
     const engineRpmTotal = validEngines.length > 0
       ? validEngines.reduce((sum, engine) => sum + engine.rpm, 0)
       : null;
@@ -1445,15 +1642,15 @@ export function App() {
       portRpm: portEngine?.rpm ?? null,
       centerRpm: centerEngine?.rpm ?? null,
       starboardRpm: starboardEngine?.rpm ?? null,
-      wind: activeSummary?.weather.wind ?? "Unknown",
-      barometer: activeSummary?.weather.barometer ?? "Unknown",
-      networkStatus: activeSummary?.connectivity.network ?? "Unknown",
-      source: activeSummary?.connectivity.nmea ?? "Live route"
+      wind: summaryInput?.weather.wind ?? "Unknown",
+      barometer: summaryInput?.weather.barometer ?? "Unknown",
+      networkStatus: summaryInput?.connectivity.network ?? "Unknown",
+      source: summaryInput?.connectivity.nmea ?? "Live route"
     };
   }
 
-  function startTripSession() {
-    const point = vesselPosition ?? { latitude: 29.5, longitude: -83.2 };
+  function startTripSession(pointOverride?: { latitude: number; longitude: number }) {
+    const point = pointOverride ?? vesselPosition ?? { latitude: 29.5, longitude: -83.2 };
     const telemetry = buildTripTelemetrySnapshot();
 
     const nextTrip = startTripLog({
@@ -1478,40 +1675,86 @@ export function App() {
     });
 
     activeTripRef.current = nextTrip;
+    movingSampleCountRef.current = 0;
+    stoppedSampleCountRef.current = 0;
     setTripSession(nextTrip);
+    persistActiveTrip(nextTrip);
     setSelectedTripId(nextTrip.id);
     setTripHistory((current) => [toTripDescriptor(nextTrip), ...current]);
   }
 
-  function finishTripAtHome(radiusNm?: number) {
-    if (!activeTripRef.current || !vesselPosition) {
-      return;
-    }
-
-    const homePoint = activeTripRef.current.breadcrumbs[0];
-    if (!homePoint) {
-      return;
-    }
-
-    const safeRadius = radiusNm ?? tripHomeRadiusNm;
-    const atHome = shouldEndTripAtHome(homePoint.latitude, homePoint.longitude, vesselPosition.latitude, vesselPosition.longitude, safeRadius);
-    if (!atHome) {
-      return;
-    }
-
-    stopTripSession();
-  }
-
-  function stopTripSession() {
+  function stopTripSession(reason: "manual" | "auto-stopped" = "manual") {
     if (!activeTripRef.current) {
       return;
     }
 
     const finalized = finalizeTripLog(activeTripRef.current);
     activeTripRef.current = null;
+    movingSampleCountRef.current = 0;
+    stoppedSampleCountRef.current = 0;
     setTripSession(null);
+    persistActiveTrip(null);
     setSelectedTripId(finalized.id);
     setTripHistory((current) => [toTripDescriptor(finalized), ...current.filter((trip) => trip.id !== finalized.id)]);
+
+    if (reason === "auto-stopped") {
+      setSelectedBreadcrumbTime(null);
+    }
+  }
+
+  function appendActiveTripPoint(nextPoint: { latitude: number; longitude: number }) {
+    if (!activeTripRef.current) {
+      return;
+    }
+
+    const lastBreadcrumb = activeTripRef.current.breadcrumbs.at(-1);
+    if (lastBreadcrumb) {
+      const lastTimeMs = Date.parse(lastBreadcrumb.time);
+      const elapsedSinceLastMs = Number.isFinite(lastTimeMs) ? Date.now() - lastTimeMs : TRIP_BREADCRUMB_MIN_INTERVAL_MS;
+      const movedSinceLastNm = geoDistanceNm(
+        lastBreadcrumb.latitude,
+        lastBreadcrumb.longitude,
+        nextPoint.latitude,
+        nextPoint.longitude
+      );
+
+      // Keep points meaningful: ignore tiny jitter updates that arrive too quickly.
+      if (elapsedSinceLastMs < TRIP_BREADCRUMB_MIN_INTERVAL_MS && movedSinceLastNm < TRIP_BREADCRUMB_MIN_MOVE_NM) {
+        return;
+      }
+    }
+
+    const telemetry = buildTripTelemetrySnapshot(summaryRef.current);
+
+    const updatedTrip = appendTripBreadcrumb(activeTripRef.current, {
+      latitude: nextPoint.latitude,
+      longitude: nextPoint.longitude,
+      speedKnots: telemetry.speedKnots,
+      headingDegrees: telemetry.headingDegrees,
+      depthFeet: telemetry.depthFeet,
+      waterTempF: telemetry.waterTempF,
+      engineRpmTotal: telemetry.engineRpmTotal,
+      engineTempAvgF: telemetry.engineTempAvgF,
+      engineTempMaxF: telemetry.engineTempMaxF,
+      fuelBurnGph: telemetry.fuelBurnGph,
+      engineVoltageAvg: telemetry.engineVoltageAvg,
+      portRpm: telemetry.portRpm,
+      centerRpm: telemetry.centerRpm,
+      starboardRpm: telemetry.starboardRpm,
+      wind: telemetry.wind,
+      barometer: telemetry.barometer,
+      networkStatus: telemetry.networkStatus,
+      source: telemetry.source
+    });
+
+    activeTripRef.current = updatedTrip;
+    setTripSession(updatedTrip);
+    persistActiveTrip(updatedTrip);
+    setSelectedTripId(updatedTrip.id);
+    setTripHistory((current) => [
+      toTripDescriptor(updatedTrip),
+      ...current.filter((trip) => trip.id !== updatedTrip.id)
+    ]);
   }
 
   useEffect(() => {
@@ -1523,8 +1766,48 @@ export function App() {
   }, [homeTileLayout]);
 
   useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    window.localStorage.setItem(TRACKPAD_POINTER_GAIN_STORAGE_KEY, trackpadPointerGain.toFixed(2));
+  }, [trackpadPointerGain]);
+
+  useEffect(() => {
     window.localStorage.setItem(TRIP_HOME_RADIUS_STORAGE_KEY, String(tripHomeRadiusNm));
   }, [tripHomeRadiusNm]);
+
+  useEffect(() => {
+    const draft = readActiveTripDraft();
+    if (!draft || draft.endedAt) {
+      return;
+    }
+
+    activeTripRef.current = draft;
+    setTripSession(draft);
+    setSelectedTripId(draft.id);
+    setTripHistory((current) => mergeTripHistories(current, [toTripDescriptor(draft)]));
+  }, []);
+
+  useEffect(() => {
+    if (selectedTripId || tripHistory.length === 0) {
+      return;
+    }
+
+    setSelectedTripId(tripHistory[0]?.id ?? null);
+  }, [selectedTripId, tripHistory]);
+
+  useEffect(() => {
+    setSelectedBreadcrumbTime(null);
+  }, [selectedTripId, tripsSubview]);
+
+  useEffect(() => {
+    if (!homePort) {
+      return;
+    }
+
+    window.localStorage.setItem(HOME_PORT_STORAGE_KEY, JSON.stringify(homePort));
+  }, [homePort]);
 
   useEffect(() => {
     window.localStorage.setItem(CUSTOM_BAIT_PRESETS_STORAGE_KEY, JSON.stringify(customBaitPresets));
@@ -1591,6 +1874,9 @@ export function App() {
 
           setSummary(data);
           setOnline(true);
+          if (Array.isArray(data.trips) && data.trips.length > 0) {
+            setTripHistory((current) => mergeTripHistories(current, data.trips));
+          }
           const pos = (data as any).vesselPosition;
           if (pos && typeof pos.latitude === "number" && typeof pos.longitude === "number") {
             setVesselPosition({ latitude: pos.latitude, longitude: pos.longitude });
@@ -1637,46 +1923,7 @@ export function App() {
         };
 
         setVesselPosition(nextPoint);
-
-        if (!activeTripRef.current) {
-          return;
-        }
-
-        const telemetry = buildTripTelemetrySnapshot();
-
-        const updatedTrip = appendTripBreadcrumb(activeTripRef.current, {
-          latitude: nextPoint.latitude,
-          longitude: nextPoint.longitude,
-          speedKnots: telemetry.speedKnots,
-          headingDegrees: telemetry.headingDegrees,
-          depthFeet: telemetry.depthFeet,
-          waterTempF: telemetry.waterTempF,
-          engineRpmTotal: telemetry.engineRpmTotal,
-          engineTempAvgF: telemetry.engineTempAvgF,
-          engineTempMaxF: telemetry.engineTempMaxF,
-          fuelBurnGph: telemetry.fuelBurnGph,
-          engineVoltageAvg: telemetry.engineVoltageAvg,
-          portRpm: telemetry.portRpm,
-          centerRpm: telemetry.centerRpm,
-          starboardRpm: telemetry.starboardRpm,
-          wind: telemetry.wind,
-          barometer: telemetry.barometer,
-          networkStatus: telemetry.networkStatus,
-          source: telemetry.source
-        });
-
-        activeTripRef.current = updatedTrip;
-        setTripSession(updatedTrip);
-        setSelectedTripId(updatedTrip.id);
-        setTripHistory((current) => [
-          toTripDescriptor(updatedTrip),
-          ...current.filter((trip) => trip.id !== updatedTrip.id)
-        ]);
-
-        const homePoint = updatedTrip.breadcrumbs[0];
-        if (homePoint && shouldEndTripAtHome(homePoint.latitude, homePoint.longitude, nextPoint.latitude, nextPoint.longitude, tripHomeRadiusNm)) {
-          finishTripAtHome(tripHomeRadiusNm);
-        }
+        appendActiveTripPoint(nextPoint);
       },
       () => {
         setVesselPosition((current) => current ?? { latitude: 29.5, longitude: -83.2 });
@@ -1691,57 +1938,124 @@ export function App() {
     return () => {
       navigator.geolocation.clearWatch(watchId);
     };
-  }, [activeSummary]);
+  }, [tripHomeRadiusNm]);
 
   useEffect(() => {
-    if (activeTripRef.current || !vesselPosition) {
+    if (!vesselPosition) {
       return;
     }
 
-    const speedMetric = activeSummary?.metrics.find((metric) => metric.label.toLowerCase().includes("speed"));
-    const speedValue = speedMetric ? Number.parseFloat(speedMetric.value) : Number.NaN;
-
-    if (Number.isFinite(speedValue) && speedValue > 1.5) {
-      startTripSession();
-    }
-  }, [activeSummary, vesselPosition]);
+    appendActiveTripPoint(vesselPosition);
+  }, [vesselPosition, tripHomeRadiusNm]);
 
   useEffect(() => {
-    if (!activeTripRef.current || !vesselPosition) {
+    if (!vesselPosition) {
       return;
     }
 
-    const homePoint = activeTripRef.current.breadcrumbs[0];
-    if (!homePoint) {
+    if (!homePort) {
+      setHomePort({ latitude: vesselPosition.latitude, longitude: vesselPosition.longitude });
+    }
+
+    const nowMs = Date.now();
+    const telemetry = buildTripTelemetrySnapshot(activeSummary);
+    const speedKnots = telemetry.speedKnots;
+    const engineRpmTotal = telemetry.engineRpmTotal;
+
+    const movingBySpeed = typeof speedKnots === "number" && speedKnots >= AUTO_TRIP_START_MIN_SPEED_KTS;
+    const movingByRpm = typeof engineRpmTotal === "number" && engineRpmTotal >= AUTO_TRIP_START_MIN_ENGINE_RPM;
+
+    const lastMovementSample = lastMovementSampleRef.current;
+    let movingByPosition = false;
+    let movedNm: number | null = null;
+    let elapsedMsSinceMovementSample: number | null = null;
+
+    if (lastMovementSample) {
+      const elapsedMs = Math.max(1, nowMs - lastMovementSample.sampledAtMs);
+      elapsedMsSinceMovementSample = elapsedMs;
+      const elapsedHours = elapsedMs / 3600000;
+      movedNm = geoDistanceNm(
+        lastMovementSample.latitude,
+        lastMovementSample.longitude,
+        vesselPosition.latitude,
+        vesselPosition.longitude
+      );
+      const derivedSpeedKnots = elapsedHours > 0 ? movedNm / elapsedHours : 0;
+      movingByPosition = movedNm >= AUTO_TRIP_POSITION_MOVE_MIN_NM && derivedSpeedKnots >= AUTO_TRIP_POSITION_MOVE_MIN_SPEED_KTS;
+    }
+
+    lastMovementSampleRef.current = {
+      latitude: vesselPosition.latitude,
+      longitude: vesselPosition.longitude,
+      sampledAtMs: nowMs
+    };
+
+    const movingNow = movingBySpeed || movingByRpm || movingByPosition;
+    const hasSpeedSignal = typeof speedKnots === "number";
+    const hasRpmSignal = typeof engineRpmTotal === "number";
+    const speedStopped = hasSpeedSignal && speedKnots <= AUTO_TRIP_STOP_MAX_SPEED_KTS;
+    const rpmStopped = hasRpmSignal && engineRpmTotal <= AUTO_TRIP_STOP_MAX_ENGINE_RPM;
+    const stoppedByTelemetry = (hasSpeedSignal || hasRpmSignal)
+      && (hasSpeedSignal ? speedStopped : true)
+      && (hasRpmSignal ? rpmStopped : true);
+    const stoppedByPosition = movedNm !== null
+      && elapsedMsSinceMovementSample !== null
+      && elapsedMsSinceMovementSample >= AUTO_TRIP_POSITION_STOP_MIN_ELAPSED_MS
+      && movedNm <= AUTO_TRIP_POSITION_STOP_MAX_MOVE_NM;
+    const stoppedNow = !movingNow && (stoppedByTelemetry || (!hasSpeedSignal && !hasRpmSignal && stoppedByPosition));
+
+    if (movingNow) {
+      movingSampleCountRef.current += 1;
+      stoppedSampleCountRef.current = 0;
+    } else if (stoppedNow) {
+      stoppedSampleCountRef.current += 1;
+      movingSampleCountRef.current = 0;
+    }
+
+    if (!activeTripRef.current && movingSampleCountRef.current >= AUTO_TRIP_START_MIN_MOVING_SAMPLES) {
+      startTripSession(vesselPosition);
       return;
     }
 
-    if (shouldEndTripAtHome(homePoint.latitude, homePoint.longitude, vesselPosition.latitude, vesselPosition.longitude, tripHomeRadiusNm)) {
-      stopTripSession();
+    if (activeTripRef.current && stoppedSampleCountRef.current >= AUTO_TRIP_STOP_MIN_STOPPED_SAMPLES) {
+      stopTripSession("auto-stopped");
     }
-  }, [activeSummary, vesselPosition, tripHomeRadiusNm]);
+  }, [activeSummary, homePort, vesselPosition]);
 
   useEffect(() => {
     let active = true;
 
-    loadLauncherState()
-      .then((state) => {
-        if (!active) {
-          return;
-        }
+    const refreshLauncher = () => {
+      loadLauncherState()
+        .then((state) => {
+          if (!active) {
+            return;
+          }
 
-        setLauncherState(state);
-      })
-      .catch(() => {
-        if (!active) {
-          return;
-        }
+          // Don't clobber an in-flight launch/kill the UI is driving locally.
+          if (launchingRef.current) {
+            return;
+          }
 
-        setLauncherState(defaultLauncherState());
-      });
+          setLauncherState(state);
+        })
+        .catch(() => {
+          if (!active) {
+            return;
+          }
+
+          setLauncherState(defaultLauncherState());
+        });
+    };
+
+    refreshLauncher();
+    // Poll so the header close icon stays in sync when the in-app home button
+    // backgrounds an app (which hits the backend directly, not via this UI).
+    const timer = window.setInterval(refreshLauncher, 2000);
 
     return () => {
       active = false;
+      window.clearInterval(timer);
     };
   }, []);
 
@@ -2973,9 +3287,8 @@ export function App() {
     try {
       const update = await loadVersionStatus();
       setSummary((current) => (current ? { ...current, update } : current));
-      setOnline(true);
     } catch {
-      setOnline(false);
+      // Keep global offline state driven by summary polling only.
     }
   }
 
@@ -3034,7 +3347,6 @@ export function App() {
         }));
         vibrateRemote([40, 40, 40]);
       }
-      setOnline(false);
     } finally {
       setLaunching(false);
     }
@@ -3052,7 +3364,6 @@ export function App() {
         lastAction: action,
         lastError: "Bluetooth command failed locally"
       }));
-      setOnline(false);
     }
   }
 
@@ -3093,7 +3404,6 @@ export function App() {
       }
       const refreshed = await loadBluetoothState().catch(() => null);
       if (refreshed) { setBluetoothState(refreshed); }
-      setOnline(false);
     } finally {
       setRunningBtWorkflowId(null);
     }
@@ -3120,7 +3430,6 @@ export function App() {
           }
         ]
       });
-      setOnline(false);
     } finally {
       setRunningBluetoothDiagnostics(false);
     }
@@ -3142,7 +3451,6 @@ export function App() {
       setOnline(true);
     } catch {
       setWifiStatus("Wi‑Fi scan unavailable");
-      setOnline(false);
     } finally {
       setWifiScanning(false);
     }
@@ -3164,10 +3472,9 @@ export function App() {
           connected: network.ssid === ssid
         })));
       }
-      setOnline(result.success);
+      setOnline(true);
     } catch {
       setWifiStatus("Unable to connect to this Wi‑Fi network");
-      setOnline(false);
     } finally {
       setWifiJoining(null);
     }
@@ -3203,10 +3510,9 @@ export function App() {
       setWifiStatus(result.message);
       const refreshed = await loadWifiNetworks();
       setWifiNetworks(refreshed.networks);
-      setOnline(result.success);
+      setOnline(true);
     } catch {
       setWifiStatus("Unable to disconnect from the current Wi‑Fi network");
-      setOnline(false);
     } finally {
       setWifiDisconnecting(false);
     }
@@ -3218,10 +3524,8 @@ export function App() {
       setRemoteAccessStatus(accessStatus);
       setRemoteUpdateStatus(updateStatus);
       setRemoteOpsError(null);
-      setOnline(true);
     } catch {
       setRemoteOpsError("Remote operations status unavailable");
-      setOnline(false);
     }
   }
 
@@ -3232,10 +3536,8 @@ export function App() {
       const status = await sendRemoteTunnelAction(action);
       setRemoteAccessStatus(status);
       setRemoteOpsError(null);
-      setOnline(true);
     } catch {
       setRemoteOpsError("Failed to run remote tunnel action");
-      setOnline(false);
     } finally {
       setRunningRemoteTunnelAction(null);
     }
@@ -3248,11 +3550,9 @@ export function App() {
       const status = await runRemoteUpdateApply();
       setRemoteUpdateStatus(status);
       setRemoteOpsError(null);
-      setOnline(true);
       await refreshUpdateStatus();
     } catch {
       setRemoteOpsError("Failed to run remote update command");
-      setOnline(false);
     } finally {
       setRunningRemoteUpdate(false);
     }
@@ -3336,6 +3636,124 @@ export function App() {
     }
   }
 
+  async function handleRemotePointer(dx: number, dy: number) {
+    try {
+      const result = await sendRemotePointerAction({ dx, dy });
+      if (!result.success) {
+        setTrackpadStatus("Pointer move failed");
+      }
+    } catch {
+      setTrackpadStatus("Pointer move failed");
+    }
+  }
+
+  async function flushTrackpadPointerQueue() {
+    if (trackpadSendingRef.current) {
+      return;
+    }
+
+    const now = Date.now();
+    const elapsed = now - trackpadLastSentAtRef.current;
+    if (elapsed < TRACKPAD_POINTER_SEND_INTERVAL_MS) {
+      window.setTimeout(() => {
+        void flushTrackpadPointerQueue();
+      }, TRACKPAD_POINTER_SEND_INTERVAL_MS - elapsed);
+      return;
+    }
+
+    const pending = trackpadPendingRef.current;
+    const nextDx = Math.trunc(pending.dx);
+    const nextDy = Math.trunc(pending.dy);
+    if (nextDx === 0 && nextDy === 0) {
+      return;
+    }
+
+    const sendDx = Math.max(-TRACKPAD_POINTER_MAX_STEP, Math.min(TRACKPAD_POINTER_MAX_STEP, nextDx));
+    const sendDy = Math.max(-TRACKPAD_POINTER_MAX_STEP, Math.min(TRACKPAD_POINTER_MAX_STEP, nextDy));
+    pending.dx -= sendDx;
+    pending.dy -= sendDy;
+
+    trackpadSendingRef.current = true;
+    trackpadLastSentAtRef.current = now;
+
+    try {
+      await handleRemotePointer(sendDx, sendDy);
+    } finally {
+      trackpadSendingRef.current = false;
+      if (Math.abs(trackpadPendingRef.current.dx) >= 1 || Math.abs(trackpadPendingRef.current.dy) >= 1) {
+        void flushTrackpadPointerQueue();
+      }
+    }
+  }
+
+  async function handleRemoteClick(button: "left" | "right" = "left") {
+    try {
+      const result = await sendRemotePointerAction({ click: button });
+      setTrackpadStatus(result.success ? "Click" : "Click failed");
+      vibrateRemote(result.success ? [8] : [36, 24, 36]);
+    } catch {
+      setTrackpadStatus("Click failed");
+      vibrateRemote([36, 24, 36]);
+    }
+  }
+
+  function beginTrackpadGesture(x: number, y: number) {
+    trackpadStartRef.current = { x, y };
+    trackpadLastRef.current = { x, y };
+    trackpadTotalMoveRef.current = 0;
+    trackpadPendingRef.current.dx = 0;
+    trackpadPendingRef.current.dy = 0;
+    setTrackpadStatus("Tracking cursor...");
+  }
+
+  function moveTrackpadGesture(x: number, y: number) {
+    const previous = trackpadLastRef.current;
+    if (!previous) {
+      return;
+    }
+
+    const rawDx = x - previous.x;
+    const rawDy = y - previous.y;
+    const absDx = Math.abs(rawDx);
+    const absDy = Math.abs(rawDy);
+    trackpadLastRef.current = { x, y };
+    trackpadTotalMoveRef.current += Math.hypot(rawDx, rawDy);
+
+    if (absDx < TRACKPAD_POINTER_MIN_DELTA_PX && absDy < TRACKPAD_POINTER_MIN_DELTA_PX) {
+      return;
+    }
+
+    const scaledDx = rawDx * trackpadPointerGain;
+    const scaledDy = rawDy * trackpadPointerGain;
+    if (Math.abs(scaledDx) < 0.5 && Math.abs(scaledDy) < 0.5) {
+      return;
+    }
+
+    trackpadPendingRef.current.dx += scaledDx;
+    trackpadPendingRef.current.dy += scaledDy;
+
+    setTrackpadStatus("Moving cursor...");
+    void flushTrackpadPointerQueue();
+  }
+
+  function endTrackpadGesture() {
+    const start = trackpadStartRef.current;
+    trackpadStartRef.current = null;
+    trackpadLastRef.current = null;
+    trackpadPendingRef.current.dx = 0;
+    trackpadPendingRef.current.dy = 0;
+    if (!start) {
+      return;
+    }
+
+    if (trackpadTotalMoveRef.current <= TRACKPAD_TAP_MAX_MOVE_PX) {
+      void handleRemoteClick("left");
+      return;
+    }
+
+    setTrackpadStatus("Cursor moved");
+  }
+
   function renderRemoteControlPad() {
     if (!remoteMode) {
       return null;
@@ -3354,10 +3772,67 @@ export function App() {
           <strong>{remoteControlStatus}</strong>
         </div>
 
+        <div className="touch-panel">
+          <p className="touch-panel__text">Trackpad</p>
+          <button
+            type="button"
+            className="touch-panel__pad"
+            onPointerDown={(event) => {
+              event.preventDefault();
+              beginTrackpadGesture(event.clientX, event.clientY);
+              event.currentTarget.setPointerCapture(event.pointerId);
+            }}
+            onPointerMove={(event) => {
+              event.preventDefault();
+              moveTrackpadGesture(event.clientX, event.clientY);
+            }}
+            onPointerUp={(event) => {
+              event.preventDefault();
+              endTrackpadGesture();
+              event.currentTarget.releasePointerCapture(event.pointerId);
+            }}
+            onPointerCancel={(event) => {
+              event.preventDefault();
+              trackpadStartRef.current = null;
+              trackpadLastRef.current = null;
+              trackpadTotalMoveRef.current = 0;
+              trackpadPendingRef.current.dx = 0;
+              trackpadPendingRef.current.dy = 0;
+            }}
+            onContextMenu={(event) => {
+              event.preventDefault();
+            }}
+            aria-label="Trackpad area: drag to move cursor, tap to click"
+          >
+            <span className="touch-panel__pad-title">Trackpad</span>
+            <span className="touch-panel__pad-copy">Drag to move the cursor in apps. Tap to click.</span>
+            <span className="touch-panel__pad-state">{trackpadStatus}</span>
+          </button>
+
+          <div className="trackpad-sensitivity-row" role="group" aria-label="Trackpad sensitivity">
+            <span className="trackpad-sensitivity-row__label">Sensitivity {trackpadPointerGain.toFixed(1)}x</span>
+            <input
+              type="range"
+              min={TRACKPAD_POINTER_GAIN_MIN}
+              max={TRACKPAD_POINTER_GAIN_MAX}
+              step={TRACKPAD_POINTER_GAIN_STEP}
+              value={trackpadPointerGain}
+              onChange={(event) => {
+                const next = Number.parseFloat(event.target.value);
+                if (!Number.isFinite(next)) {
+                  return;
+                }
+
+                setTrackpadPointerGain(Math.min(TRACKPAD_POINTER_GAIN_MAX, Math.max(TRACKPAD_POINTER_GAIN_MIN, next)));
+              }}
+            />
+          </div>
+        </div>
+
         <div className="remote-control-grid" role="group" aria-label="Directional and media controls">
           <button type="button" className="theme-toggle remote-btn remote-btn--ghost" onClick={() => void handleRemoteControl("home")}>Home</button>
           <button type="button" className="theme-toggle remote-btn" onClick={() => void handleRemoteControl("up")}>▲</button>
-          <button type="button" className="theme-toggle remote-btn remote-btn--ghost" onClick={() => void handleRemoteControl("mute")}>Mute</button>
+          <button type="button" className="theme-toggle remote-btn" onClick={() => void handleRemoteControl("volup", 2)} disabled={runningRemoteControlAction !== null}>Vol +</button>
 
           <button type="button" className="theme-toggle remote-btn" onClick={() => void handleRemoteControl("left")}>◀</button>
           <button type="button" className="theme-toggle theme-toggle--primary remote-btn remote-btn--ok" onClick={() => void handleRemoteControl("select")}>OK</button>
@@ -3365,12 +3840,11 @@ export function App() {
 
           <button type="button" className="theme-toggle remote-btn remote-btn--ghost" onClick={() => void handleRemoteControl("back")}>Back</button>
           <button type="button" className="theme-toggle remote-btn" onClick={() => void handleRemoteControl("down")}>▼</button>
-          <button type="button" className="theme-toggle remote-btn remote-btn--ghost" onClick={() => void handleRemoteControl("playpause")}>⏯</button>
-        </div>
+          <button type="button" className="theme-toggle remote-btn remote-btn--ghost" onClick={() => void handleRemoteControl("mute")}>Mute</button>
 
-        <div className="remote-control-row" role="group" aria-label="Volume controls">
           <button type="button" className="theme-toggle remote-btn" onClick={() => void handleRemoteControl("voldown", 2)} disabled={runningRemoteControlAction !== null}>Vol −</button>
-          <button type="button" className="theme-toggle remote-btn" onClick={() => void handleRemoteControl("volup", 2)} disabled={runningRemoteControlAction !== null}>Vol +</button>
+          <button type="button" className="theme-toggle remote-btn remote-btn--ghost" onClick={() => void handleRemoteControl("playpause")}>⏯</button>
+          <div aria-hidden="true" />
         </div>
 
         <div className="keyboard-toggle-row remote-control-row">
@@ -4694,7 +5168,7 @@ export function App() {
 
     if (selectedNavId === "vessel") {
       return (
-        <section className="panel drill-panel">
+        <section className="panel drill-panel drill-panel--trips">
           <div className="panel__header">
             <div>
               <p className="panel__eyebrow">Vessel</p>
@@ -4733,26 +5207,55 @@ export function App() {
     }
 
     if (selectedNavId === "trips") {
-      const selectedTrip = tripHistory.find((trip) => trip.id === selectedTripId) ?? (tripSession ?? tripHistory[0] ?? null);
-      const activeTripPoints = selectedTrip?.breadcrumbs.map((point) => [point.latitude, point.longitude] as [number, number]) ?? [];
-      const activeTripCenter: [number, number] = vesselPosition
-        ? [vesselPosition.latitude, vesselPosition.longitude]
-        : (activeTripPoints.length > 0 ? activeTripPoints[0] : [29.5, -83.2] as [number, number]);
-      const tripDetail = selectedTrip ?? tripSession ?? tripHistory[0] ?? null;
+      const currentTrip = tripSession;
+      const selectedHistoryTrip = tripHistory.find((trip) => trip.id === selectedTripId) ?? (tripHistory[0] ?? null);
+      const tripDetail = tripsSubview === "current" ? (currentTrip ?? selectedHistoryTrip) : selectedHistoryTrip;
+      const selectedHistoryTripId = selectedHistoryTrip?.id ?? "";
+      const activeTripPoints = tripDetail?.breadcrumbs.map((point) => [point.latitude, point.longitude] as [number, number]) ?? [];
       const breadcrumbRows = tripDetail?.breadcrumbs.slice(-25).reverse() ?? [];
+      const selectedBreadcrumb = (tripDetail?.breadcrumbs.find((point) => point.time === selectedBreadcrumbTime))
+        ?? tripDetail?.breadcrumbs.at(-1)
+        ?? null;
+      const activeTripCenter: [number, number] = selectedBreadcrumb
+        ? [selectedBreadcrumb.latitude, selectedBreadcrumb.longitude]
+        : vesselPosition
+          ? [vesselPosition.latitude, vesselPosition.longitude]
+          : (activeTripPoints.at(-1) ?? [29.5, -83.2] as [number, number]);
+      const tripMapRefreshToken = `${tripMapFullscreen}-${selectedTripId ?? "none"}-${tripDetail?.breadcrumbs.length ?? 0}-${vesselPosition ? `${vesselPosition.latitude.toFixed(4)}:${vesselPosition.longitude.toFixed(4)}` : "none"}`;
 
       const renderTripRouteMap = (mapClassName: string) => (
-        <MapContainer center={activeTripCenter} zoom={13} scrollWheelZoom={true} attributionControl={false} className={mapClassName}>
+        <MapContainer
+          center={activeTripCenter}
+          zoom={13}
+          scrollWheelZoom={true}
+          attributionControl={false}
+          className={mapClassName}
+          style={{ width: "100%", height: "100%" }}
+        >
           <TileLayer
             attribution='&copy; OpenStreetMap contributors'
             url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
           />
-          {vesselPosition ? <TripRouteViewport target={[vesselPosition.latitude, vesselPosition.longitude]} /> : null}
+          <TripRouteMapAutoResize refreshToken={tripMapRefreshToken} />
+          {selectedBreadcrumb
+            ? <TripRouteViewport target={[selectedBreadcrumb.latitude, selectedBreadcrumb.longitude]} />
+            : vesselPosition
+              ? <TripRouteViewport target={[vesselPosition.latitude, vesselPosition.longitude]} />
+              : null}
           {activeTripPoints.length > 1 ? <Polyline positions={activeTripPoints} pathOptions={{ color: "#39d0ff", weight: 4, opacity: 0.9 }} /> : null}
           {activeTripPoints.map((point, index) => (
             <CircleMarker key={`${point[0]}-${point[1]}-${index}`} center={point} radius={3} pathOptions={{ color: "#fff", fillColor: "#39d0ff", fillOpacity: 1, weight: 1 }} />
           ))}
-          {vesselPosition ? (
+          {selectedBreadcrumb ? (
+            <CircleMarker
+              center={[selectedBreadcrumb.latitude, selectedBreadcrumb.longitude]}
+              radius={8}
+              pathOptions={{ color: "#082240", fillColor: "#4ef1be", fillOpacity: 1, weight: 2 }}
+            >
+              <Tooltip direction="top" offset={[0, -4]}>Selected point</Tooltip>
+            </CircleMarker>
+          ) : null}
+          {vesselPosition && tripsSubview === "current" ? (
             <CircleMarker
               center={[vesselPosition.latitude, vesselPosition.longitude]}
               radius={7}
@@ -4777,51 +5280,135 @@ export function App() {
       }
 
       return (
-        <section className="panel drill-panel">
+        <section className="panel drill-panel drill-panel--trips">
           <div className="panel__header">
             <div>
               <p className="panel__eyebrow">Trips</p>
-              <h2>Recent runs and summaries</h2>
+              <h2>{tripsSubview === "current" ? "Current trip" : "Past trips"}</h2>
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
               <span className="status-pill status-pill--success">{tripHistory.length} trips</span>
-              <button className="camera-fullscreen-btn" type="button" onClick={() => setTripMapFullscreen(true)}
-                aria-label="Enter fullscreen trip map">⛶</button>
+              {tripDetail ? (
+                <button className="camera-fullscreen-btn" type="button" onClick={() => setTripMapFullscreen(true)}
+                  aria-label="Enter fullscreen trip map">⛶</button>
+              ) : null}
             </div>
           </div>
 
-          <div className="trip-controls" style={{ display: "flex", gap: 12, marginBottom: 16, alignItems: "center", flexWrap: "wrap" }}>
-            {tripSession ? (
-              <button type="button" className="action-btn action-btn--danger" onClick={stopTripSession}>Stop trip</button>
-            ) : (
-              <button type="button" className="action-btn" onClick={startTripSession}>Start trip</button>
-            )}
-            <label style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 220, fontSize: 14 }}>
-              <span>Home radius</span>
-              <input
-                type="range"
-                min={0.05}
-                max={2.5}
-                step={0.05}
-                value={tripHomeRadiusNm}
-                onChange={(event) => setTripHomeRadiusNm(Number.parseFloat(event.target.value) || DEFAULT_TRIP_HOME_RADIUS_NM)}
-                aria-label="Trip home radius in nautical miles"
-              />
-              <strong>{tripHomeRadiusNm.toFixed(2)} NM</strong>
-            </label>
+          <div className="trip-subnav" role="tablist" aria-label="Trips pages">
+            <button
+              type="button"
+              role="tab"
+              aria-selected={tripsSubview === "current"}
+              className={tripsSubview === "current" ? "trip-subnav__btn trip-subnav__btn--active" : "trip-subnav__btn"}
+              onClick={() => setTripsSubview("current")}
+            >
+              Current
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={tripsSubview === "history"}
+              className={tripsSubview === "history" ? "trip-subnav__btn trip-subnav__btn--active" : "trip-subnav__btn"}
+              onClick={() => setTripsSubview("history")}
+            >
+              Past trips
+            </button>
           </div>
 
+          {tripsSubview === "history" && tripHistory.length > 0 ? (
+            <div className="trip-controls trip-controls--kiosk">
+              <label className="trip-controls__radius" htmlFor="past-trip-select" style={{ minWidth: 420 }}>
+                <span>Past trip</span>
+                <select
+                  id="past-trip-select"
+                  value={selectedHistoryTripId}
+                  onChange={(event) => {
+                    setSelectedTripId(event.target.value || null);
+                    setSelectedBreadcrumbTime(null);
+                  }}
+                  style={{
+                    minHeight: 40,
+                    borderRadius: 8,
+                    border: "1px solid rgba(122, 180, 255, 0.35)",
+                    background: "rgba(10, 18, 28, 0.88)",
+                    color: "rgba(235, 245, 255, 0.96)",
+                    padding: "0 10px",
+                    minWidth: 280
+                  }}
+                  aria-label="Select a past trip"
+                >
+                  {tripHistory.map((trip) => {
+                    const startedLabel = trip.startedAt
+                      ? new Date(trip.startedAt).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })
+                      : "Unknown start";
+
+                    return (
+                      <option key={trip.id} value={trip.id}>
+                        {`${trip.title} (${startedLabel})`}
+                      </option>
+                    );
+                  })}
+                </select>
+              </label>
+            </div>
+          ) : null}
+
           {tripDetail ? (
-            <div className="trip-detail panel" style={{ marginBottom: 16, padding: 16 }}>
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, marginBottom: 12 }}>
+            <>
+              <div className="trip-route-map-shell">
+                {renderTripRouteMap("trip-route-map")}
+              </div>
+
+              {tripsSubview === "current" ? (
+                <div className="trip-controls trip-controls--kiosk">
+                {tripSession ? (
+                  <button type="button" className="action-btn action-btn--danger" onClick={() => stopTripSession("manual")}>Stop trip</button>
+                ) : (
+                  <button type="button" className="action-btn" onClick={() => startTripSession()}>Start trip</button>
+                )}
+                <label className="trip-controls__radius">
+                  <span>Auto movement tracking</span>
+                  <input
+                    type="range"
+                    min={0.05}
+                    max={2.5}
+                    step={0.05}
+                    value={tripHomeRadiusNm}
+                    onChange={(event) => setTripHomeRadiusNm(Number.parseFloat(event.target.value) || DEFAULT_TRIP_HOME_RADIUS_NM)}
+                    aria-label="Trip smoothing slider"
+                  />
+                  <strong>{tripHomeRadiusNm.toFixed(2)}</strong>
+                </label>
+                </div>
+              ) : null}
+            </>
+          ) : (
+            <div className="panel trip-detail trip-detail--kiosk">
+              <div className="trip-detail__header">
+                <div>
+                  <p className="panel__eyebrow">Trips</p>
+                  <h3>No trip data yet</h3>
+                </div>
+              </div>
+              <div className="trip-detail__stats">
+                <div><strong>Start moving</strong><div>Trips auto-start when speed/RPM indicates motion</div></div>
+                <div><strong>Auto-stop</strong><div>Trips close after repeated stopped samples</div></div>
+              </div>
+            </div>
+          )}
+
+          {tripDetail ? (
+            <div className="trip-detail trip-detail--kiosk panel">
+              <div className="trip-detail__header">
                 <div>
                   <p className="panel__eyebrow">Route detail</p>
-                  <h3 style={{ margin: "4px 0 0" }}>{tripDetail.title}</h3>
+                  <h3>{tripDetail.title}</h3>
                 </div>
                 <span className="trip-card__tag">{tripDetail.tag}</span>
               </div>
 
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))", gap: 8 }}>
+              <div className="trip-detail__stats">
                 <div><strong>{tripDetail.distanceNm.toFixed(2)}</strong><div>NM</div></div>
                 <div><strong>{tripDetail.startedAt ? new Date(tripDetail.startedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : "--"}</strong><div>started</div></div>
                 <div><strong>{tripDetail.endedAt ? new Date(tripDetail.endedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : "live"}</strong><div>ended</div></div>
@@ -4834,63 +5421,63 @@ export function App() {
             </div>
           ) : null}
 
-          <div className="trip-route-map-shell">
-            {renderTripRouteMap("trip-route-map")}
-          </div>
-
           {breadcrumbRows.length > 0 ? (
-            <div className="panel" style={{ marginBottom: 16, padding: 16 }}>
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
-                <p className="panel__eyebrow" style={{ margin: 0 }}>Breadcrumb data log</p>
-                <span style={{ fontSize: 12, opacity: 0.75 }}>Most recent {breadcrumbRows.length} points</span>
+            <div className="panel trip-breadcrumbs">
+              <div className="trip-breadcrumbs__header">
+                <p className="panel__eyebrow">Breadcrumb data log</p>
+                <span className="trip-breadcrumbs__meta">Most recent {breadcrumbRows.length} points</span>
               </div>
-              <div style={{ overflowX: "auto" }}>
-                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+              <div className="trip-breadcrumbs__table-wrap">
+                <table className="trip-breadcrumbs__table">
                   <thead>
                     <tr>
-                      <th style={{ textAlign: "left", padding: "6px 4px" }}>Time</th>
-                      <th style={{ textAlign: "left", padding: "6px 4px" }}>Lat / Lon</th>
-                      <th style={{ textAlign: "left", padding: "6px 4px" }}>Speed</th>
-                      <th style={{ textAlign: "left", padding: "6px 4px" }}>RPM</th>
-                      <th style={{ textAlign: "left", padding: "6px 4px" }}>Depth</th>
-                      <th style={{ textAlign: "left", padding: "6px 4px" }}>Water</th>
-                      <th style={{ textAlign: "left", padding: "6px 4px" }}>Engine Temp</th>
-                      <th style={{ textAlign: "left", padding: "6px 4px" }}>Fuel</th>
-                      <th style={{ textAlign: "left", padding: "6px 4px" }}>V</th>
-                      <th style={{ textAlign: "left", padding: "6px 4px" }}>Source</th>
+                      <th>Time</th>
+                      <th>Lat / Lon</th>
+                      <th>Speed</th>
+                      <th>RPM</th>
+                      <th>Depth</th>
+                      <th>Water</th>
+                      <th>Engine Temp</th>
+                      <th>Fuel</th>
+                      <th>V</th>
+                      <th>Source</th>
                     </tr>
                   </thead>
                   <tbody>
                     {breadcrumbRows.map((point) => (
-                      <tr key={`${tripDetail?.id ?? "trip"}-${point.time}`}>
-                        <td style={{ padding: "6px 4px", borderTop: "1px solid rgba(255,255,255,0.12)" }}>
+                      <tr
+                        key={`${tripDetail?.id ?? "trip"}-${point.time}`}
+                        onClick={() => setSelectedBreadcrumbTime(point.time)}
+                        style={{ cursor: "pointer", background: selectedBreadcrumb?.time === point.time ? "rgba(57,208,255,0.14)" : undefined }}
+                      >
+                        <td>
                           {new Date(point.time).toLocaleTimeString([], { hour: "numeric", minute: "2-digit", second: "2-digit" })}
                         </td>
-                        <td style={{ padding: "6px 4px", borderTop: "1px solid rgba(255,255,255,0.12)", whiteSpace: "nowrap" }}>
+                        <td className="trip-breadcrumbs__latlon">
                           {point.latitude.toFixed(5)}, {point.longitude.toFixed(5)}
                         </td>
-                        <td style={{ padding: "6px 4px", borderTop: "1px solid rgba(255,255,255,0.12)" }}>
+                        <td>
                           {typeof point.speedKnots === "number" ? `${point.speedKnots.toFixed(1)} kt` : "--"}
                         </td>
-                        <td style={{ padding: "6px 4px", borderTop: "1px solid rgba(255,255,255,0.12)" }}>
+                        <td>
                           {typeof point.engineRpmTotal === "number" ? point.engineRpmTotal.toFixed(0) : "--"}
                         </td>
-                        <td style={{ padding: "6px 4px", borderTop: "1px solid rgba(255,255,255,0.12)" }}>
+                        <td>
                           {typeof point.depthFeet === "number" ? `${point.depthFeet.toFixed(1)} ft` : "--"}
                         </td>
-                        <td style={{ padding: "6px 4px", borderTop: "1px solid rgba(255,255,255,0.12)" }}>
+                        <td>
                           {typeof point.waterTempF === "number" ? `${point.waterTempF.toFixed(1)} F` : "--"}
                         </td>
-                        <td style={{ padding: "6px 4px", borderTop: "1px solid rgba(255,255,255,0.12)" }}>
+                        <td>
                           {typeof point.engineTempAvgF === "number" ? `${point.engineTempAvgF.toFixed(0)} F` : "--"}
                         </td>
-                        <td style={{ padding: "6px 4px", borderTop: "1px solid rgba(255,255,255,0.12)" }}>
+                        <td>
                           {typeof point.fuelBurnGph === "number" ? `${point.fuelBurnGph.toFixed(1)} gph` : "--"}
                         </td>
-                        <td style={{ padding: "6px 4px", borderTop: "1px solid rgba(255,255,255,0.12)" }}>
+                        <td>
                           {typeof point.engineVoltageAvg === "number" ? `${point.engineVoltageAvg.toFixed(2)} V` : "--"}
                         </td>
-                        <td style={{ padding: "6px 4px", borderTop: "1px solid rgba(255,255,255,0.12)" }}>
+                        <td>
                           {point.source}
                         </td>
                       </tr>
@@ -4901,16 +5488,51 @@ export function App() {
             </div>
           ) : null}
 
-          <div className="trips-panel">
-            {tripHistory.length > 0 ? tripHistory.map((trip) => (
-              <TripSummaryCard
-                key={trip.id || trip.title}
-                trip={trip}
-                selected={selectedTripId === trip.id || (!selectedTripId && trip.id === tripDetail?.id)}
-                onSelect={setSelectedTripId}
-              />
-            )) : null}
-          </div>
+          {selectedBreadcrumb ? (
+            <div className="panel trip-detail trip-detail--kiosk">
+              <div className="trip-detail__header">
+                <div>
+                  <p className="panel__eyebrow">Selected breadcrumb snapshot</p>
+                  <h3>{new Date(selectedBreadcrumb.time).toLocaleString()}</h3>
+                </div>
+                <span className="trip-card__tag">{selectedBreadcrumb.source}</span>
+              </div>
+              <div className="trip-detail__stats">
+                <div><strong>{selectedBreadcrumb.latitude.toFixed(5)}, {selectedBreadcrumb.longitude.toFixed(5)}</strong><div>position</div></div>
+                <div><strong>{typeof selectedBreadcrumb.speedKnots === "number" ? `${selectedBreadcrumb.speedKnots.toFixed(1)} kt` : "--"}</strong><div>speed</div></div>
+                <div><strong>{typeof selectedBreadcrumb.headingDegrees === "number" ? `${Math.round(selectedBreadcrumb.headingDegrees)} deg` : "--"}</strong><div>heading</div></div>
+                <div><strong>{typeof selectedBreadcrumb.depthFeet === "number" ? `${selectedBreadcrumb.depthFeet.toFixed(1)} ft` : "--"}</strong><div>depth</div></div>
+                <div><strong>{typeof selectedBreadcrumb.waterTempF === "number" ? `${selectedBreadcrumb.waterTempF.toFixed(1)} F` : "--"}</strong><div>water</div></div>
+                <div><strong>{typeof selectedBreadcrumb.engineRpmTotal === "number" ? selectedBreadcrumb.engineRpmTotal.toFixed(0) : "--"}</strong><div>total rpm</div></div>
+                <div><strong>{typeof selectedBreadcrumb.portRpm === "number" ? selectedBreadcrumb.portRpm.toFixed(0) : "--"}</strong><div>port rpm</div></div>
+                <div><strong>{typeof selectedBreadcrumb.centerRpm === "number" ? selectedBreadcrumb.centerRpm.toFixed(0) : "--"}</strong><div>center rpm</div></div>
+                <div><strong>{typeof selectedBreadcrumb.starboardRpm === "number" ? selectedBreadcrumb.starboardRpm.toFixed(0) : "--"}</strong><div>starboard rpm</div></div>
+                <div><strong>{typeof selectedBreadcrumb.engineTempAvgF === "number" ? `${selectedBreadcrumb.engineTempAvgF.toFixed(0)} F` : "--"}</strong><div>engine avg temp</div></div>
+                <div><strong>{typeof selectedBreadcrumb.engineTempMaxF === "number" ? `${selectedBreadcrumb.engineTempMaxF.toFixed(0)} F` : "--"}</strong><div>engine max temp</div></div>
+                <div><strong>{typeof selectedBreadcrumb.fuelBurnGph === "number" ? `${selectedBreadcrumb.fuelBurnGph.toFixed(1)} gph` : "--"}</strong><div>fuel burn</div></div>
+                <div><strong>{typeof selectedBreadcrumb.engineVoltageAvg === "number" ? `${selectedBreadcrumb.engineVoltageAvg.toFixed(2)} V` : "--"}</strong><div>voltage</div></div>
+                <div><strong>{selectedBreadcrumb.wind || "--"}</strong><div>wind</div></div>
+                <div><strong>{selectedBreadcrumb.barometer || "--"}</strong><div>barometer</div></div>
+                <div><strong>{selectedBreadcrumb.networkStatus || "--"}</strong><div>network</div></div>
+              </div>
+            </div>
+          ) : null}
+
+          {tripsSubview === "history" ? (
+            <div className="trips-panel">
+              {tripHistory.length > 0 ? tripHistory.map((trip) => (
+                <TripSummaryCard
+                  key={trip.id || trip.title}
+                  trip={trip}
+                  selected={selectedTripId === trip.id || (!selectedTripId && trip.id === tripDetail?.id)}
+                  onSelect={(tripId) => {
+                    setSelectedTripId(tripId);
+                    setSelectedBreadcrumbTime(null);
+                  }}
+                />
+              )) : null}
+            </div>
+          ) : null}
         </section>
       );
     }
@@ -4962,6 +5584,15 @@ export function App() {
               onClick={() => setSettingsSubview("remote")}
             >
               Remote
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={settingsSubview === "remote-qr"}
+              className={settingsSubview === "remote-qr" ? "settings-kiosk__pager-btn settings-kiosk__pager-btn--active" : "settings-kiosk__pager-btn"}
+              onClick={() => setSettingsSubview("remote-qr")}
+            >
+              Remote QR
             </button>
             <button
               type="button"
@@ -5163,6 +5794,36 @@ export function App() {
               </>
             ) : null}
 
+            {settingsSubview === "remote-qr" ? (
+              <>
+                <div className="settings-remote-qr">
+                  <p className="panel__eyebrow">Scan for remote control</p>
+                  <div className="settings-remote-qr__frame" role="img" aria-label="Large QR code for Palmer Lou remote">
+                    <img src={remoteQrImageSrc} alt="Large QR code for Palmer Lou remote" />
+                  </div>
+                  <p className="settings-remote-qr__url">{remoteQrTargetUrl}</p>
+                  <div className="settings-remote-qr__conditions" aria-label="Ride and wave conditions">
+                    <div className="settings-remote-qr__condition-card">
+                      <span>Tide</span>
+                      <strong>{activeSummary.weather.tide}</strong>
+                    </div>
+                    <div className="settings-remote-qr__condition-card">
+                      <span>Current wave</span>
+                      <strong>{currentWaveFeet === null ? "--" : `${currentWaveFeet.toFixed(1)} ft`}</strong>
+                    </div>
+                    <div className="settings-remote-qr__condition-card">
+                      <span>Peak wave</span>
+                      <strong>{peakWaveFeet === null ? "--" : `${peakWaveFeet.toFixed(1)} ft`}</strong>
+                    </div>
+                    <div className="settings-remote-qr__condition-card">
+                      <span>Buoy wind</span>
+                      <strong>{avgBuoyWindKnots === null ? "--" : `${avgBuoyWindKnots.toFixed(1)} kt`}</strong>
+                    </div>
+                  </div>
+                </div>
+              </>
+            ) : null}
+
             {settingsSubview === "updates" ? (
               <>
                 <div className="home-panel__quick-grid settings-kiosk__summary">
@@ -5242,7 +5903,6 @@ export function App() {
       const state = await sendKillLaunchedAppRequest();
       setLauncherState(state);
       setShowRuntimePanel(false);
-      setOnline(true);
     } catch {
       setLauncherState((current) => ({
         ...current,
@@ -5251,15 +5911,15 @@ export function App() {
         launchMethod: "Task kill",
         startedAt: new Date().toISOString()
       }));
-      setOnline(false);
     } finally {
       setKillingLaunchedApp(false);
     }
   }
 
   const isNativeRuntime = launcherState.runtime.trim().toLowerCase() === "native app process";
-  const killTargetName = isNativeRuntime && launcherState.status === "Launched" ? launcherState.name : "";
-  const killTargetLogoPath = isNativeRuntime && launcherState.status === "Launched"
+  const appIsRunning = isNativeRuntime && (launcherState.status === "Launched" || launcherState.status === "Background");
+  const killTargetName = appIsRunning ? launcherState.name : "";
+  const killTargetLogoPath = appIsRunning
     ? [...streamingTargets, ...musicTargets].find((target) => target.id === launcherState.appId)?.logoPath
     : undefined;
 
@@ -5275,12 +5935,16 @@ export function App() {
               <span className={`home-header__dot ${nmeaOnline ? "home-header__dot--online" : "home-header__dot--offline"}`} />
               <span className="home-header__time">{nowLabel}</span>
             </div>
-            {killTargetName ? (
-              <button className="kill-app-button kill-app-button--inline" type="button"
-                onClick={() => void handleKillLaunchedApp()} disabled={killingLaunchedApp}>
-                <span className="kill-app-button__name">{killingLaunchedApp ? "Closing…" : `✕ ${killTargetName}`}</span>
-              </button>
-            ) : null}
+            <div className="remote-only-header__actions">
+              {killTargetName ? (
+                <button className="kill-app-button kill-app-button--inline" type="button"
+                  onClick={() => void handleKillLaunchedApp()} disabled={killingLaunchedApp}>
+                  <span className="kill-app-button__name">{killingLaunchedApp ? "Closing…" : `✕ ${killTargetName}`}</span>
+                </button>
+              ) : (
+                <span className="remote-only-header__placeholder" aria-hidden="true" />
+              )}
+            </div>
           </header>
 
           <div className="remote-only-body">
@@ -5373,10 +6037,10 @@ export function App() {
           online={nmeaOnline}
           nowLabel={nowLabel}
           remoteMode={remoteMode}
-          qrImageSrc={assetUrl("/brand/remote-qr.svg")}
+          qrImageSrc={remoteQrImageSrc}
           killingApps={killingLaunchedApp}
           killTargetName={killTargetName}
-          killTargetLogoPath={killTargetLogoPath}
+          {...(killTargetLogoPath ? { killTargetLogoPath } : {})}
           {...(!remoteMode ? { onKillApps: () => void handleKillLaunchedApp() } : {})}
         />
 

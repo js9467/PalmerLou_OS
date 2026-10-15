@@ -280,6 +280,72 @@ function asFiniteNumber(value: unknown, fallback = 0) {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
 }
 
+function asNullableFiniteNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function normalizeStoredBreadcrumb(value: unknown): TripBreadcrumb | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+
+  const point = value as Record<string, unknown>;
+  const latitude = asNullableFiniteNumber(point.latitude);
+  const longitude = asNullableFiniteNumber(point.longitude);
+
+  if (latitude === null || longitude === null) {
+    return null;
+  }
+
+  return {
+    time: typeof point.time === "string" ? point.time : new Date().toISOString(),
+    latitude,
+    longitude,
+    speedKnots: asNullableFiniteNumber(point.speedKnots),
+    headingDegrees: asNullableFiniteNumber(point.headingDegrees),
+    depthFeet: asNullableFiniteNumber(point.depthFeet),
+    waterTempF: asNullableFiniteNumber(point.waterTempF),
+    engineRpmTotal: asNullableFiniteNumber(point.engineRpmTotal),
+    engineTempAvgF: asNullableFiniteNumber(point.engineTempAvgF),
+    engineTempMaxF: asNullableFiniteNumber(point.engineTempMaxF),
+    fuelBurnGph: asNullableFiniteNumber(point.fuelBurnGph),
+    engineVoltageAvg: asNullableFiniteNumber(point.engineVoltageAvg),
+    portRpm: asNullableFiniteNumber(point.portRpm),
+    centerRpm: asNullableFiniteNumber(point.centerRpm),
+    starboardRpm: asNullableFiniteNumber(point.starboardRpm),
+    wind: typeof point.wind === "string" ? point.wind : "Unknown",
+    barometer: typeof point.barometer === "string" ? point.barometer : "Unknown",
+    networkStatus: typeof point.networkStatus === "string" ? point.networkStatus : "Unknown",
+    source: typeof point.source === "string" ? point.source : "Stored trip"
+  };
+}
+
+function readStoredBreadcrumbs(candidate: Record<string, unknown>): TripBreadcrumb[] {
+  const groups: unknown[] = [
+    candidate.breadcrumbs,
+    candidate.track,
+    candidate.points,
+    candidate.positions,
+    candidate.log
+  ];
+
+  for (const group of groups) {
+    if (!Array.isArray(group)) {
+      continue;
+    }
+
+    const normalized = group
+      .map((entry) => normalizeStoredBreadcrumb(entry))
+      .filter((entry): entry is TripBreadcrumb => entry !== null);
+
+    if (normalized.length > 0) {
+      return normalized;
+    }
+  }
+
+  return [];
+}
+
 function normalizeStoredTrip(item: unknown): StoredTripDescriptor | null {
   if (!item || typeof item !== "object") {
     return null;
@@ -290,7 +356,7 @@ function normalizeStoredTrip(item: unknown): StoredTripDescriptor | null {
     return null;
   }
 
-  const breadcrumbs = Array.isArray(candidate.breadcrumbs) ? candidate.breadcrumbs as TripBreadcrumb[] : [];
+  const breadcrumbs = readStoredBreadcrumbs(candidate);
 
   return {
     id: candidate.id,
